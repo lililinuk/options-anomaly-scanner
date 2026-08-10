@@ -1,0 +1,16 @@
+{
+  "_meta": {"request_id": "fixture-only"},
+  "data": {
+    "monthly_remaining": 99871,
+    "capabilities": {
+      "options": ["chain_snapshot", "oi_change"],
+      "volatility.iv_rank": true,
+      "market.movers": false
+    },
+    "capabilities_detail": [
+      {"command": "options.oi_per_expiry", "available": true},
+      {"command": "derived.dealer_gex", "enabled": true},
+      {"command": "derived.heatmap", "available": false}
+    ]
+  }
+}
