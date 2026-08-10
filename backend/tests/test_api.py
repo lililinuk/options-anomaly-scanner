@@ -1,5 +1,9 @@
-from fastapi.testclient import TestClient
+from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.db.session import get_db_session
 from app.main import app
 
 
@@ -13,14 +17,58 @@ def test_application_health_is_utc_and_does_not_contact_vendor() -> None:
 
 
 def test_system_status_is_truthful_phase_one_placeholder() -> None:
-    response = TestClient(app).get("/api/v1/system/status")
+    refresh = SimpleNamespace(detected_at=None, observed_at="2026-08-10T12:00:00Z")
+    usage = SimpleNamespace(
+        http_status=200,
+        quota_limit=100000,
+        quota_remaining=99999,
+        rate_limit=60,
+        rate_limit_remaining=58,
+    )
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.values = iter([refresh, usage])
+
+        def execute(self, _statement):  # type: ignore[no-untyped-def]
+            return None
+
+        def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            return next(self.values)
+
+    app.dependency_overrides[get_db_session] = lambda: FakeSession()
+    try:
+        response = TestClient(app).get("/api/v1/system/status")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     assert response.json() == {
         "scanner_status": "not_scheduled",
         "latest_scan_at": None,
-        "nightwatch_status": "not_checked",
-        "quota_remaining": None,
+        "nightwatch_status": "connected",
+        "latest_capability_refresh_at": "2026-08-10T12:00:00Z",
+        "quota_limit": 100000,
+        "quota_remaining": 99999,
+        "rate_limit": 60,
+        "rate_limit_remaining": 58,
+        "latest_request_status": 200,
+        "database_status": "connected",
         "scheduling_enabled": False,
     }
 
+
+def test_system_status_reports_database_unavailable_without_vendor_call() -> None:
+    class OfflineSession:
+        def execute(self, _statement):  # type: ignore[no-untyped-def]
+            raise SQLAlchemyError("fixture database offline")
+
+    app.dependency_overrides[get_db_session] = lambda: OfflineSession()
+    try:
+        response = TestClient(app).get("/api/v1/system/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["database_status"] == "unavailable"
+    assert response.json()["nightwatch_status"] == "unknown"

@@ -66,13 +66,67 @@ class ApiUsageAudit(Base):
     expiration: Mapped[date | None] = mapped_column(Date)
     http_status: Mapped[int | None] = mapped_column(Integer)
     consumed_quota: Mapped[bool | None] = mapped_column(Boolean)
+    quota_limit: Mapped[int | None] = mapped_column(Integer)
     quota_remaining: Mapped[int | None] = mapped_column(Integer)
+    rate_limit: Mapped[int | None] = mapped_column(Integer)
     rate_limit_remaining: Mapped[int | None] = mapped_column(Integer)
     request_id: Mapped[str] = mapped_column(String(128), unique=True)
     vendor_request_id: Mapped[str | None] = mapped_column(String(128))
     latency_ms: Mapped[Decimal] = mapped_column(Numeric(12, 3))
     attempt_count: Mapped[int] = mapped_column(Integer)
+    retry_count: Mapped[int] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class MetadataRefresh(Base):
+    """One immutable discovery response persisted as a metadata snapshot."""
+
+    __tablename__ = "metadata_refreshes"
+    __table_args__ = (Index("ix_metadata_refreshes_observed_at", "observed_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_request_id: Mapped[str] = mapped_column(String(128), unique=True)
+    http_status: Mapped[int] = mapped_column(Integer)
+    capability_count: Mapped[int] = mapped_column(Integer)
+
+    capabilities: Mapped[list["CapabilitySnapshot"]] = relationship(
+        back_populates="refresh",
+        cascade="all, delete-orphan",
+        order_by="CapabilitySnapshot.capability_identifier",
+        lazy="selectin",
+    )
+
+
+class CapabilitySnapshot(Base):
+    """Normalized account capability evidence from a single discover response."""
+
+    __tablename__ = "capability_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_request_id",
+            "capability_identifier",
+            name="uq_capability_snapshot_request_identifier",
+        ),
+        Index(
+            "ix_capability_snapshots_identifier_observed",
+            "capability_identifier",
+            "observed_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    refresh_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("metadata_refreshes.id"))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    capability_identifier: Mapped[str] = mapped_column(String(160))
+    available: Mapped[bool] = mapped_column(Boolean)
+    coverage: Mapped[str | None] = mapped_column(String(160))
+    weight: Mapped[int | None] = mapped_column(Integer)
+    source_request_id: Mapped[str] = mapped_column(String(128))
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    refresh: Mapped[MetadataRefresh] = relationship(back_populates="capabilities")
 
 
 class OptionContractObservation(Base):
@@ -130,4 +184,3 @@ class PositionLifecycleEvent(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
     detection: Mapped[SignalDetection] = relationship(back_populates="lifecycle_events")
-

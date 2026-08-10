@@ -8,7 +8,7 @@
       "market.movers": false
     },
     "capabilities_detail": [
-      {"command": "options.oi_per_expiry", "available": true},
+      {"command": "options.oi_per_expiry", "available": true, "coverage": "on-demand", "weight": 1},
       {"command": "derived.dealer_gex", "enabled": true},
       {"command": "derived.heatmap", "available": false}
     ]

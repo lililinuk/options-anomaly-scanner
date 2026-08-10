@@ -20,6 +20,10 @@ class CapabilityDetail(NightwatchPayload):
     name: str | None = None
     available: bool | None = None
     enabled: bool | None = None
+    coverage: str | None = None
+    weight: int | None = None
+    scope: str | None = None
+    tool: str | None = None
 
 
 class DiscoverResponse(NightwatchPayload):
@@ -60,12 +64,15 @@ class ApiUsageEvent(BaseModel):
     expiration: str | None = None
     http_status: int | None = None
     consumed_quota: bool | None = None
+    quota_limit: int | None = None
     quota_remaining: int | None = None
+    rate_limit: int | None = None
     rate_limit_remaining: int | None = None
     request_id: str
     vendor_request_id: str | None = None
     latency_ms: float
     attempt_count: int
+    retry_count: int
     error_code: str | None = None
 
 

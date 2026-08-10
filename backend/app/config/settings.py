@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     database_url: SecretStr = SecretStr(
         "postgresql+psycopg://options_scanner:change-me@localhost:5432/options_scanner"
     )
+    database_connect_timeout_seconds: int = Field(default=5, ge=1, le=30)
     nightwatch_api_key: SecretStr | None = None
     nightwatch_base_url: HttpUrl = HttpUrl("https://api.yehangshe.com")
     nightwatch_timeout_seconds: float = Field(default=20.0, gt=0, le=120)

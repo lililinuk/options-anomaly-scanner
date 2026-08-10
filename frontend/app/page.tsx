@@ -82,9 +82,7 @@ export default function Home() {
         </header>
 
         <section className="metrics" aria-label="System status">
-          <MetricCard label="System status" value="Ready" detail="API foundation available" tone="green" />
-          <MetricCard label="Latest scan" value="Not run" detail="Scheduling disabled in Phase 1" />
-          <MetricCard label="API quota" value="—" detail="No account metadata loaded" tone="amber" />
+          <SystemStatusCards />
           <MetricCard label="Candidate set" value="0" detail="Signal engine not configured" />
         </section>
 
@@ -126,8 +124,8 @@ export default function Home() {
             </div>
             <ol className="readiness-list">
               <li className="complete"><span>01</span><div><strong>Application API</strong><small>Service contract ready</small></div></li>
-              <li><span>02</span><div><strong>Provider capability sync</strong><small>Awaiting authenticated discovery</small></div></li>
-              <li><span>03</span><div><strong>First raw snapshot</strong><small>No vendor data requested</small></div></li>
+              <li><span>02</span><div><strong>Provider capability sync</strong><small>Manual metadata refresh only</small></div></li>
+              <li><span>03</span><div><strong>Raw metadata evidence</strong><small>See persisted status above</small></div></li>
               <li><span>04</span><div><strong>Signal configuration</strong><small>Not specified</small></div></li>
             </ol>
             <div className="integrity-note">
@@ -145,4 +143,4 @@ export default function Home() {
     </div>
   );
 }
-
+import { SystemStatusCards } from "./system-status-cards";

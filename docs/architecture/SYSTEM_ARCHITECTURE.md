@@ -24,6 +24,7 @@ The browser calls only our FastAPI API. It never authenticates to or calls Night
 - `app/nightwatch`: HTTP transport, typed envelopes, capability registry, quota-header parsing, retry classification, structured errors, concurrency control, request IDs, and usage events.
 - `app/ingestion`: writes raw source evidence before any lossy transformation.
 - `app/normalization`: defines immutable vendor-neutral option observations.
+- `app/metadata`: coordinates the explicit `/discover` refresh flow without scheduling it.
 - `app/analytics`: reserved for future hierarchical analysis. It contains no formulas in Phase 1.
 - `app/scanner`: reserved for scan orchestration. Scheduling is disabled.
 - `app/db` and `app/persistence`: SQLAlchemy models, sessions, append-only historical records, and repositories.
@@ -41,6 +42,8 @@ PostgreSQL is the system of record for:
 3. normalized contract observations linked back to raw evidence;
 4. external API usage and quota metadata;
 5. future immutable detections and append-only lifecycle events.
+
+The manual metadata transaction writes one raw `/discover` response, one deduplicated API-usage row, one immutable refresh header, and its normalized capability rows. `source_request_id` uniqueness makes replay of the same response idempotent. A successful command performs a count-based database read-back before reporting success.
 
 Every persisted timestamp uses `timestamp with time zone`. Application code canonicalizes instants to UTC. Market-session dates are calculated with `America/New_York`; host-local time is never market truth.
 
@@ -69,7 +72,19 @@ OI is lagged source data, not real-time participant identity. One Nightwatch cha
 
 ## Dashboard role
 
-The Next.js application presents our persisted/reconciled state through FastAPI: status, scan history, quota state, candidate research, ticker detail, and lifecycle history. Phase 1 is a responsive shell with truthful empty and disabled states. Final trading charts and interaction design are out of scope.
+The Next.js application presents our persisted/reconciled state through FastAPI: status, scan history, quota state, candidate research, ticker detail, and lifecycle history. Its fixed same-origin `/api/system-status` proxy calls only FastAPI; it cannot accept or construct arbitrary Nightwatch paths. FastAPI's status route reads PostgreSQL and never contacts Nightwatch. Phase 1 is a responsive shell with truthful empty and disabled states. Final trading charts and interaction design are out of scope.
+
+## Manual metadata refresh
+
+From `backend/`, run `python -m app.cli refresh-metadata`. The command:
+
+1. verifies PostgreSQL connectivity before any external request;
+2. makes one authenticated, zero-quota `GET /v1/discover` request;
+3. parses and normalizes capability identifiers, availability, coverage, weight, and safe source metadata;
+4. atomically persists raw evidence, API usage, and capability snapshot rows;
+5. reads the snapshot back and prints only counts, quota/rate metadata, retry count, and request ID.
+
+No scheduler invokes this command. No browser route can trigger it.
 
 ## Future scheduling design
 
@@ -84,4 +99,3 @@ A later scheduler will enqueue idempotent scan runs from configurable US-market-
 - expose run state through FastAPI.
 
 No scheduler, production polling, or deployment topology is implemented in Phase 1.
-

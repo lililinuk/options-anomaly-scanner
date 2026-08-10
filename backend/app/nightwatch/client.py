@@ -131,6 +131,7 @@ class NightwatchClient:
                 request_id=request_id,
                 latency_ms=latency_ms,
                 attempt_count=attempts,
+                retry_count=max(0, attempts - 1),
                 error_code="TRANSPORT_ERROR",
             )
             await self._observe(event)
@@ -156,12 +157,15 @@ class NightwatchClient:
                 if path in ZERO_QUOTA_PATHS
                 else (True if response.status_code == 200 else None)
             ),
+            quota_limit=quota.quota_limit,
             quota_remaining=quota.quota_remaining,
+            rate_limit=quota.rate_limit,
             rate_limit_remaining=quota.rate_limit_remaining,
             request_id=request_id,
             vendor_request_id=vendor_request_id,
             latency_ms=latency_ms,
             attempt_count=attempts,
+            retry_count=max(0, attempts - 1),
             error_code=error_code,
         )
         await self._observe(event)

@@ -28,6 +28,15 @@ python -m alembic upgrade head
 python -m uvicorn app.main:app --reload
 ```
 
+After migrations are applied, refresh zero-quota account metadata manually:
+
+```powershell
+cd backend
+python -m app.cli refresh-metadata
+```
+
+This command preflights PostgreSQL, calls only `GET /v1/discover`, stores the raw response, normalized capability snapshot, and API-usage observation, then verifies read-back. It is never scheduled automatically and never prints the API key.
+
 Run tests:
 
 ```powershell
@@ -52,11 +61,10 @@ npm run lint
 npm run build
 ```
 
-Set `NEXT_PUBLIC_API_BASE_URL` to this project's FastAPI URL. Never put a Nightwatch key or Nightwatch base URL in a public frontend variable.
+Set `BACKEND_INTERNAL_URL` to this project's FastAPI URL. The browser requests the fixed same-origin `/api/system-status` route; Next.js proxies that request to FastAPI. Never put a Nightwatch key or Nightwatch base URL in a public frontend variable.
 
 ## Configuration
 
 Copy `.env.example` to `.env` at the repository root. Pydantic validates backend settings. The future scan cadence, DTE bucket rules, thresholds, and weights are configuration concerns; production scheduling and financial logic are intentionally not implemented in Phase 1.
 
-See [system architecture](docs/architecture/SYSTEM_ARCHITECTURE.md), [signal scope](docs/specifications/SIGNAL_ENGINE_SCOPE.md), and [vendor capabilities](docs/vendor/NIGHTWATCH_CAPABILITIES.md).
-
+See [system architecture](docs/architecture/SYSTEM_ARCHITECTURE.md), [runtime validation](docs/architecture/PHASE1_RUNTIME_VALIDATION.md), [signal scope](docs/specifications/SIGNAL_ENGINE_SCOPE.md), and [vendor capabilities](docs/vendor/NIGHTWATCH_CAPABILITIES.md).
