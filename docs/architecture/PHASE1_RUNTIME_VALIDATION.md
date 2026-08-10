@@ -1,32 +1,27 @@
 # Phase 1 Runtime Validation
 
-## Closeout status — 2026-08-10
+## Validated closeout status — 2026-08-10
 
-The accepted Phase 1 baseline is commit `013e9e9cbe071626a0f5a441f35a528947a6274c`.
+The accepted Phase 1 commits remain unchanged:
 
-Runtime infrastructure was probed before any installation or configuration change:
+- `013e9e9cbe071626a0f5a441f35a528947a6274c`
+- `976de3a825f5390507163aa8d294b86640f0b5e2`
 
-- no `psql` or `pg_isready` command is installed;
-- no Windows PostgreSQL service is registered;
-- no process is listening on local port 5432;
-- no common PostgreSQL installation directory was found;
-- neither Docker nor Podman is installed.
+The ignored local `.env` now supplies a non-production Supabase PostgreSQL URI. Provider URIs using `postgres://` or `postgresql://` are normalized in memory to `postgresql+psycopg://`, selecting the repository's installed Psycopg 3 driver without rewriting or displaying the secret.
 
-Therefore Alembic could not be applied to a real PostgreSQL development database in this closeout. No SQLite or mock database is represented as PostgreSQL validation, and no system software was installed implicitly.
+Connectivity and schema were validated against PostgreSQL 17.6 in the `public` schema. Alembic current and head both reported `20260810_0002`. The following tables were confirmed through PostgreSQL catalog inspection:
 
-The manual refresh command was executed against this blocked environment. Its PostgreSQL preflight failed with a sanitized message and exit code 2 before any Nightwatch endpoint was contacted.
+- `alembic_version`
+- `api_usage_audit`
+- `capability_snapshots`
+- `metadata_refreshes`
+- `option_contract_observations`
+- `position_lifecycle_events`
+- `raw_vendor_payloads`
+- `scan_runs`
+- `signal_detections`
 
-## Exact blocking prerequisite
-
-Provide one non-production PostgreSQL 14+ instance by either:
-
-1. installing/starting local PostgreSQL, creating a development database/user, and putting its SQLAlchemy URL in the ignored root `.env`; or
-2. installing Docker, running `docker compose up -d postgres`, and setting the matching `DATABASE_URL` in `.env`.
-
-Do not commit `.env` or place credentials on command lines that may be logged.
-`DATABASE_CONNECT_TIMEOUT_SECONDS` defaults to five seconds so unavailable development infrastructure fails safely before any metadata request.
-
-## Completion commands once PostgreSQL is available
+## Runtime commands
 
 ```powershell
 cd backend
@@ -36,7 +31,7 @@ python -m app.cli refresh-metadata
 
 The second command is the persistence smoke test: Nightwatch `/discover` response → typed parser → normalized capabilities → PostgreSQL transaction → verified read-back. It exits before contacting Nightwatch if the database preflight fails.
 
-Expected schema additions from revision `20260810_0002` are:
+Schema additions from revision `20260810_0002` were verified as applied:
 
 - `metadata_refreshes`
 - `capability_snapshots`
@@ -44,4 +39,22 @@ Expected schema additions from revision `20260810_0002` are:
 - `api_usage_audit.rate_limit`
 - `api_usage_audit.retry_count`
 
-The automated suite uses mocked Nightwatch responses only. No financial scoring, directional signals, lifecycle inference, GEX trading logic, or tradeability calculation is part of this runtime work.
+## Persistence smoke result
+
+One zero-quota `GET /v1/discover` call produced and verified:
+
+- one `metadata_refreshes` row;
+- 94 `capability_snapshots` rows, all with coverage metadata;
+- one `/v1/discover` `api_usage_audit` row;
+- one raw evidence row with a verified SHA-256 digest;
+- linked client, vendor, raw, and source request IDs;
+- quota `100000/100000`, rate limit `59/60`, HTTP 200, zero retries, and `consumed_quota=false`;
+- timezone-aware observation timestamps.
+
+The persisted raw and normalized JSON contained no Authorization, bearer token, or key-shaped fields. The relevant tables have no authorization/password column. Replaying the persisted source response through the repository returned `created=false`; all four row counts remained unchanged.
+
+## Status path
+
+The complete PostgreSQL → FastAPI → fixed Next.js `/api/system-status` proxy → dashboard path was run locally. FastAPI and the proxy reported database connected, Nightwatch connected, latest capability timestamp, quota/rate metadata, and latest HTTP 200. The rendered dashboard displayed those values with no console warning/error and no Nightwatch URL in the DOM.
+
+The automated suite continues to use mocked Nightwatch responses only. No financial scoring, directional signals, lifecycle inference, GEX trading logic, or tradeability calculation is part of this runtime work.

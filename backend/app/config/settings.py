@@ -43,6 +43,20 @@ class Settings(BaseSettings):
     def empty_key_is_none(cls, value: object) -> object:
         return None if value == "" else value
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_driver(cls, value: object) -> object:
+        """Use the installed Psycopg 3 driver for generic provider URLs."""
+
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if not isinstance(raw, str):
+            return value
+        if raw.startswith("postgres://"):
+            return "postgresql+psycopg://" + raw.removeprefix("postgres://")
+        if raw.startswith("postgresql://"):
+            return "postgresql+psycopg://" + raw.removeprefix("postgresql://")
+        return value
+
 
 @lru_cache
 def get_settings() -> Settings:
