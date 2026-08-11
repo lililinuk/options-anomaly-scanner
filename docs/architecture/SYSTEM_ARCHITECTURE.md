@@ -1,5 +1,9 @@
 # System Architecture
 
+## Phase 2A runtime extension
+
+The accepted Phase 1 transport → raw ingestion → normalization → persistence boundary remains unchanged. Phase 2A adds a versioned scanner configuration and pure analytics layer, an explicit eight-stage manual orchestrator, append-only scanner entities, fixed FastAPI scan routes, a fixed Next.js proxy, and dashboard/read-only field-guide presentation. Nightwatch remains backend-only. The application-process scan runner is suitable for manual development use but is not a durable production queue.
+
 ## Purpose and boundary
 
 Options Anomaly Scanner is a research and decision-support system. Phase 1 builds a traceable ingestion and presentation foundation; it does not identify directional trades or implement unusual-options formulas.

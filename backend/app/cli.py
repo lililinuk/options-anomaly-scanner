@@ -11,6 +11,7 @@ from app.metadata.service import ApiUsageCollector, refresh_metadata
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
 from app.persistence.metadata import MetadataRepository
+from app.scanner.service import ConcurrentScanError, Mag7Scanner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +20,10 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser(
         "refresh-metadata",
         help="Fetch /v1/discover, persist it, and verify database read-back",
+    )
+    subcommands.add_parser(
+        "run-mag7-scan",
+        help="Run one budget-bounded manual Phase 2A MAG7 positioning scan",
     )
     return parser
 
@@ -66,10 +71,41 @@ async def run_refresh_metadata() -> int:
     return 0
 
 
+async def run_mag7_scan() -> int:
+    settings = get_settings()
+    try:
+        with get_session_factory()() as session:
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=min(settings.nightwatch_max_concurrency, 4),
+            ) as client:
+                summary = await Mag7Scanner(session, client).execute(trigger="cli")
+    except ConcurrentScanError as error:
+        print(f"MAG7 scan not started: {error}", file=sys.stderr)
+        return 4
+    except (SQLAlchemyError, NightwatchError, RuntimeError) as error:
+        print(f"MAG7 scan failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    print(
+        f"MAG7 scan: scan_run_id={summary.scan_run_id} status={summary.status} "
+        f"tickers={summary.tickers_scanned} deep_tickers={summary.deep_tickers} "
+        f"deep_expiries={summary.expirations_deep_scanned} contracts={summary.contracts_analyzed} "
+        f"clusters={summary.clusters_found} consumed_units={summary.consumed_quota_units} "
+        f"network_attempts={summary.network_attempts} cache_hits={summary.cache_hits} "
+        f"fresh_requests={summary.fresh_requests} elapsed_seconds={summary.elapsed_seconds}"
+    )
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
         return asyncio.run(run_refresh_metadata())
+    if args.command == "run-mag7-scan":
+        return asyncio.run(run_mag7_scan())
     return 1
 
 

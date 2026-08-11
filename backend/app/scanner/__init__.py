@@ -1,2 +1,1 @@
-"""Future scanner orchestration boundary. No scoring logic exists in Phase 1."""
-
+"""Versioned Phase 2A positioning scanner orchestration and analytics."""

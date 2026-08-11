@@ -57,6 +57,7 @@ a { color: inherit; text-decoration: none; }
 .wordmark p { margin: 0; }
 .product-name { color: #fff; font-size: 14px; font-weight: 700; letter-spacing: .015em; }
 .product-subtitle { color: #8db1b6; font-size: 12px; margin-top: 2px !important; letter-spacing: .08em; text-transform: uppercase; }
+.product-name, .product-subtitle { display: block; }
 
 .mark { width: 35px; height: 35px; position: relative; display: flex; align-items: flex-end; gap: 3px; padding: 7px; border: 1px solid rgba(133, 224, 207, .35); border-radius: 9px; }
 .mark span { width: 5px; background: #57c8b5; border-radius: 2px 2px 0 0; }
@@ -89,7 +90,7 @@ h1 { max-width: 720px; margin: 0; color: #122632; font-family: Georgia, "Times N
 .status-dot.green { background: #1c9a7d; box-shadow: 0 0 0 4px rgba(28, 154, 125, .1); }
 .status-dot.amber { background: var(--amber); box-shadow: 0 0 0 4px rgba(211, 151, 41, .12); }
 
-.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; max-width: 1440px; margin: 0 auto 17px; }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; max-width: 1440px; margin: 0 auto 17px; }
 .metric-card { padding: 19px 20px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
 .metric-topline { display: flex; align-items: center; justify-content: space-between; }
 .metric-topline p { margin: 0; color: #71808a; font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
@@ -102,6 +103,34 @@ h1 { max-width: 720px; margin: 0; color: #122632; font-family: Georgia, "Times N
 .panel-header.compact { min-height: 82px; }
 .panel-header h2 { margin: 6px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 21px; font-weight: 500; }
 .panel-header button { padding: 9px 13px; color: #9aa5a9; border: 1px solid #dfe5e6; border-radius: 7px; background: #f6f8f8; font-size: 11px; font-weight: 650; cursor: not-allowed; }
+
+.scan-strip { max-width: 1440px; margin: 0 auto 17px; display: grid; grid-template-columns: repeat(4, 1fr) auto; gap: 1px; align-items: stretch; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--line); box-shadow: var(--shadow); }
+.scan-strip > div { min-width: 0; padding: 15px 17px; background: #fff; }
+.scan-strip span, .scan-strip strong { display: block; }
+.scan-strip span { margin-bottom: 7px; color: var(--faint); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.scan-strip strong { overflow: hidden; color: #263b46; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.run-button { min-width: 154px; padding: 0 20px; border: 0; color: #effffc; background: var(--teal); font-size: 12px; font-weight: 750; cursor: pointer; }
+.run-button:disabled { opacity: .65; cursor: wait; }
+.scan-message { max-width: 1440px; margin: -5px auto 17px; padding: 10px 13px; color: #8b4f16; border: 1px solid #efd8b5; border-radius: 8px; background: #fff8eb; font-size: 12px; }
+.results-panel { max-width: 1440px; margin: 0 auto; }
+.results-panel .panel-header small { color: var(--faint); font-size: 10px; }
+.results-table { min-height: 355px; }
+.results-table th { padding: 12px 13px; white-space: nowrap; }
+.results-table td { padding: 14px 13px; color: #354851; border-bottom: 1px solid #edf0f1; font-size: 11px; white-space: nowrap; }
+.results-table td:first-child { color: var(--ink); font-weight: 800; }
+
+.guide-header { margin-bottom: 22px; }
+.caveat-card { max-width: 1440px; margin: 0 auto 18px; padding: 20px 23px; border: 1px solid #eadbbd; border-radius: 11px; background: #fffaf1; }
+.caveat-card ul { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 28px; margin: 13px 0 0; padding-left: 18px; color: #675b4b; font-size: 12px; line-height: 1.55; }
+.glossary-grid { max-width: 1440px; margin: 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.glossary-card { padding: 21px 22px; border: 1px solid var(--line); border-radius: 11px; background: #fff; box-shadow: var(--shadow); }
+.glossary-card h2 { margin: 7px 0 17px; font-family: Georgia, "Times New Roman", "Noto Serif TC", serif; font-size: 20px; font-weight: 500; }
+.field-code { color: var(--teal); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 700; }
+.glossary-card dl, .glossary-card dd { margin: 0; }
+.glossary-card dl { display: grid; gap: 10px; }
+.glossary-card dl div { display: grid; grid-template-columns: 112px 1fr; gap: 12px; }
+.glossary-card dt { color: #819097; font-size: 10px; font-weight: 750; }
+.glossary-card dd { color: #435861; font-size: 11px; line-height: 1.55; }
 
 .table-wrap { min-height: 368px; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
@@ -135,6 +164,8 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   main { padding: 35px 28px 22px; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .workspace-grid { grid-template-columns: 1fr; }
+  .scan-strip { grid-template-columns: repeat(2, 1fr); }
+  .run-button { min-height: 48px; grid-column: 1 / -1; }
 }
 
 @media (max-width: 720px) {
@@ -142,7 +173,7 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   .sidebar { position: relative; width: 100%; height: auto; padding: 18px; }
   .wordmark { margin: 0 0 18px; }
   .nav-heading, .sidebar-note { display: none; }
-  nav ul { grid-template-columns: repeat(5, minmax(44px, 1fr)); }
+  nav ul { grid-template-columns: repeat(2, minmax(44px, 1fr)); }
   nav a { justify-content: center; min-height: 40px; padding: 7px; font-size: 0; }
   nav a.active::before, .soon { display: none; }
   .nav-glyph { font-size: 10px; }
@@ -152,11 +183,16 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   .metrics { grid-template-columns: 1fr 1fr; }
   .metric-card { padding: 16px; }
   footer { display: block; line-height: 1.5; }
+  .glossary-grid { grid-template-columns: 1fr; }
+  .caveat-card ul { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 430px) {
   .metrics { grid-template-columns: 1fr; }
+  .scan-strip { grid-template-columns: 1fr 1fr; }
+  .scan-strip > div { padding: 13px; }
   .panel-header { align-items: flex-start; }
   h1 { font-size: 31px; }
+  .glossary-card { padding: 18px; }
+  .glossary-card dl div { grid-template-columns: 1fr; gap: 3px; }
 }
-

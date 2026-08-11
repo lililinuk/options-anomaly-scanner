@@ -41,6 +41,11 @@ The requested entries below were both **DOCUMENTED** and **DISCOVER-CONFIRMED** 
 | `volatility.anomaly` | `/v1/volatility/anomaly/{ticker}` | DISCOVER-CONFIRMED; vendor measure, not our final signal |
 | `volatility.anomaly_top` | `/v1/volatility/anomaly-top` | DISCOVER-CONFIRMED |
 | `market.oi_change` | `/v1/market/oi-change` | DISCOVER-CONFIRMED |
+
+Runtime finding (2026-08-12): `volume-oi-per-expiry` returned `data.expiries[]` records
+with `expiry`, total `volume`, and total `oi`, but no Call/Put split. The parser therefore
+preserves side fields as null and scores only available concentration/neighbor evidence;
+it never converts an unavailable side into zero.
 | `market.movers` | `/v1/market/movers` | DISCOVER-CONFIRMED |
 | Dealer GEX snapshot | `/v1/derived/dealer-gex/{ticker}/snapshot` | DISCOVER-CONFIRMED as `derived.dealer_gex_snapshot`; documented cost 1 unit |
 | Dealer GEX history | `/v1/derived/dealer-gex/{ticker}/history` | DISCOVER-CONFIRMED as `derived.dealer_gex_history`; 1 unit/page |

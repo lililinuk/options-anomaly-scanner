@@ -1,5 +1,6 @@
 import hashlib
 import json
+import uuid
 from datetime import date, datetime
 from typing import Any
 
@@ -25,9 +26,11 @@ class RawIngestor:
         ticker: str | None = None,
         expiration: date | None = None,
         observed_at: datetime | None = None,
+        scan_run_id: uuid.UUID | None = None,
     ) -> RawVendorPayload:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
         row = RawVendorPayload(
+            scan_run_id=scan_run_id,
             endpoint=endpoint,
             request_id=request_id,
             vendor_request_id=vendor_request_id,
@@ -41,4 +44,3 @@ class RawIngestor:
         self._session.add(row)
         self._session.flush()
         return row
-

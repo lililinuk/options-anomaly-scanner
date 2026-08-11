@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.session import get_db_session
 from app.main import app
+from app.scanner.service import ConcurrentScanError
 
 
 def test_application_health_is_utc_and_does_not_contact_vendor() -> None:
@@ -72,3 +73,31 @@ def test_system_status_reports_database_unavailable_without_vendor_call() -> Non
     assert response.status_code == 200
     assert response.json()["database_status"] == "unavailable"
     assert response.json()["nightwatch_status"] == "unknown"
+
+
+def test_latest_mag7_scan_has_safe_empty_state() -> None:
+    class EmptySession:
+        def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            return None
+
+    app.dependency_overrides[get_db_session] = lambda: EmptySession()
+    try:
+        response = TestClient(app).get("/api/v1/scans/mag7/latest")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json() == {"scan": None, "results": []}
+
+
+def test_concurrent_mag7_scan_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    async def conflict(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise ConcurrentScanError("already running")
+
+    monkeypatch.setattr("app.api.routes.scans.Mag7Scanner.execute", conflict)
+    app.dependency_overrides[get_db_session] = lambda: object()
+    try:
+        response = TestClient(app).post("/api/v1/scans/mag7")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 409
+    assert "already running" in response.json()["detail"]
