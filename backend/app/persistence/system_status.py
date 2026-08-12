@@ -30,7 +30,6 @@ def load_system_status(session: Session) -> PersistedSystemStatus:
         )
         latest_usage = session.scalar(
             select(ApiUsageAudit)
-            .where(ApiUsageAudit.endpoint == "/v1/discover")
             .order_by(desc(ApiUsageAudit.requested_at))
             .limit(1)
         )

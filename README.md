@@ -1,6 +1,6 @@
 # Options Anomaly Scanner
 
-Production-oriented research infrastructure for detecting unusual US equity-options positioning and, in later phases, ranking tradeable candidates. Phase 1 establishes the data, API, observability, and dashboard foundation. It deliberately contains no financial scoring formulas or directional trade signals.
+Production-oriented research infrastructure for evidence-backed US equity-options positioning research. The current immutable financial specification is `signal_spec_v1.1_phase2a`; it separates same-day expiry activity from daily OI positioning history and does not infer investor direction or Tradeability.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ Nightwatch REST API -> Python transport -> raw ingestion -> PostgreSQL
                                             |                 |
                                       normalization      FastAPI -> Next.js
                                             |
-                                  future analytics engine
+                              versioned Phase 2A analytics
 ```
 
 The browser talks only to FastAPI. Nightwatch credentials and calls remain in the backend.
@@ -28,14 +28,18 @@ python -m alembic upgrade head
 python -m uvicorn app.main:app --reload
 ```
 
-After migrations are applied, refresh zero-quota account metadata manually:
+After migrations are applied, the supported manual operations are:
 
 ```powershell
 cd backend
 python -m app.cli refresh-metadata
+python -m app.cli archive-mag7-oi
+python -m app.cli run-mag7-scan
 ```
 
-This command preflights PostgreSQL, calls only `GET /v1/discover`, stores the raw response, normalized capability snapshot, and API-usage observation, then verifies read-back. It is never scheduled automatically and never prints the API key.
+`refresh-metadata` calls only the metadata discovery route. `archive-mag7-oi` is the idempotent 0–180 DTE daily OI archive job and uses the vendor OI observation date as its identity. `run-mag7-scan` refreshes the current activity surface and reuses the latest valid archive; it does not rebuild the archive. None of these commands prints the API key.
+
+The repository intentionally does not run a durable in-process scheduler. Production deployment must invoke `archive-mag7-oi` externally at the configured `Asia/Singapore` trigger time; vendor date/as-of remains authoritative, and same-date runs skip without duplicating history.
 
 Run tests:
 
@@ -65,6 +69,6 @@ Set `BACKEND_INTERNAL_URL` to this project's FastAPI URL. The browser requests t
 
 ## Configuration
 
-Copy `.env.example` to `.env` at the repository root. Pydantic validates backend settings. The future scan cadence, DTE bucket rules, thresholds, and weights are configuration concerns; production scheduling and financial logic are intentionally not implemented in Phase 1.
+Copy `.env.example` to `.env` at the repository root. Pydantic validates backend settings. Financial thresholds, component anchors, request budgets, universe, and archive trigger settings are versioned configuration. Secrets remain server-side.
 
-See [system architecture](docs/architecture/SYSTEM_ARCHITECTURE.md), [runtime validation](docs/architecture/PHASE1_RUNTIME_VALIDATION.md), [signal scope](docs/specifications/SIGNAL_ENGINE_SCOPE.md), and [vendor capabilities](docs/vendor/NIGHTWATCH_CAPABILITIES.md).
+See [system architecture](docs/architecture/SYSTEM_ARCHITECTURE.md), [signal specification](docs/specifications/SIGNAL_SPECIFICATION_V1.md), [scan orchestration](docs/specifications/SCAN_ORCHESTRATION_V1.md), [signal scope](docs/specifications/SIGNAL_ENGINE_SCOPE.md), and [vendor capabilities](docs/vendor/NIGHTWATCH_CAPABILITIES.md).

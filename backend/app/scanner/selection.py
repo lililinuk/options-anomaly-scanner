@@ -13,6 +13,15 @@ class ScoredExpiry(Protocol):
     preliminary_score: object
 
 
+class DualDiscoveryExpiry(Protocol):
+    ticker: str
+    bucket_at_detection: str
+    same_day_activity_score: object
+    persistent_positioning_score: object | None
+    discovery_score: object
+    structural_cold_start_eligible: bool
+
+
 T = TypeVar("T", bound=ScoredExpiry)
 
 
@@ -42,4 +51,45 @@ def select_deep_expiries(rows: Iterable[T]) -> list[T]:
             ]
             if choices:
                 selected.append(max(choices, key=lambda row: float(row.preliminary_score)))
+    return selected
+
+
+U = TypeVar("U", bound=DualDiscoveryExpiry)
+
+
+def select_dual_discovery(rows: Iterable[U]) -> list[U]:
+    eligible = [
+        row
+        for row in rows
+        if row.bucket_at_detection != DteBucket.LONG.value
+        and (
+            float(row.same_day_activity_score) >= LIMITS.same_day_eligibility_score
+            or (
+                row.persistent_positioning_score is not None
+                and float(row.persistent_positioning_score)
+                >= LIMITS.persistent_eligibility_score
+            )
+            or row.structural_cold_start_eligible
+        )
+    ]
+    strengths = {
+        ticker: max(float(row.discovery_score) for row in eligible if row.ticker == ticker)
+        for ticker in {row.ticker for row in eligible}
+    }
+    tickers = [
+        ticker
+        for ticker, _score in sorted(
+            strengths.items(), key=lambda item: item[1], reverse=True
+        )[: LIMITS.max_deep_tickers]
+    ]
+    selected: list[U] = []
+    for ticker in tickers:
+        for bucket in (DteBucket.VERY_SHORT, DteBucket.SHORT, DteBucket.MEDIUM):
+            choices = [
+                row
+                for row in eligible
+                if row.ticker == ticker and row.bucket_at_detection == bucket.value
+            ]
+            if choices:
+                selected.append(max(choices, key=lambda row: float(row.discovery_score)))
     return selected

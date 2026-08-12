@@ -1,52 +1,134 @@
-# Signal Specification V1 — Phase 2A
+# Signal Specification — Phase 2A
 
-Version: `signal_spec_v1.0_phase2a`
+Current immutable version: `signal_spec_v1.1_phase2a`
 
-Phase 2A answers **where unusual MAG7 option positioning is occurring today**. It describes Call/Put activity structure symmetrically. It does not infer investor direction, produce BUY/SELL, or calculate Tradeability, GEX, IV, price, catalyst, unwind, roll, or machine-learning signals.
+Historical version `signal_spec_v1.0_phase2a` remains attached to its existing scan records and is
+never recalculated in place. Phase 2A v1.1 describes activity and OI positioning structure. It does
+not infer opening buyers, investor direction, BUY/SELL, GEX trading logic, lifecycle, Tradeability,
+or any Phase 2B signal.
 
-## Universe and tenor
+## v1.0 → v1.1 amendment
 
-The versioned fixed universe is AAPL, MSFT, NVDA, AMZN, META, GOOGL, and TSLA. Calendar DTE uses the `America/New_York` market date. Buckets are VERY_SHORT 0–7, SHORT 8–30, MEDIUM 31–90, and LONG 91–180. LONG is aggregate-only; deep contract analysis stops at 90 DTE. `dte_at_detection` and `bucket_at_detection` are immutable. `current_dte` and `current_bucket` are presentation state. DTE 0 adds `ZERO_DTE`.
+Runtime validation proved that expiry breakdown has total volume/OI but no per-expiry Call/Put
+volume, while chain snapshot has complete contract OI/quotes/Greeks but no contract volume or last.
+Therefore v1.1:
 
-## Preliminary expiry features and score
+- replaces `volume-oi-per-expiry` discovery with separate `expiry-breakdown` activity and archived
+  `oi-per-expiry` positioning;
+- removes per-expiry Volume Skew from discovery;
+- separates Same-Day Activity and Persistent Positioning and selects by their maximum;
+- adds append-only daily expiry and complete-chain OI history over 0–180 DTE;
+- replaces Contract Anomaly Score with Contract Positioning Structure Score;
+- removes Contract Volume/OI, premium, historical volume, and Intraday Burst scoring;
+- turns `oi-change` into supplemental OI Change Radar evidence only;
+- replaces volume/premium clusters with same-right OI-positioning clusters.
 
-Within 0–180 DTE the scanner preserves Call/Put volume and OI and calculates:
+## Universe, dates, and tenor
 
-- `volume_share = expiry volume / ticker 0–180 DTE volume`;
-- `oi_share = expiry OI / ticker 0–180 DTE OI`;
-- `volume_skew = (call volume - put volume) / total volume`;
-- `oi_skew = (call OI - put OI) / total OI`;
-- `neighbor_ratio = expiry OI / median comparable-expiry OI`.
+The configuration-driven universe remains AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA. Market scan
+DTE uses `America/New_York`. Daily archive history uses Nightwatch `vendor_oi_date`/`as_of`; job time
+never manufactures an OI date. Buckets are VERY_SHORT 0–7, SHORT 8–30, MEDIUM 31–90, LONG 91–180.
+Daily history includes all four buckets; deep candidate analysis uses only 0–90 DTE.
 
-Zero denominators yield unavailable values. Vendor expiry type wins; otherwise third-Friday is recorded as inferred `STANDARD_MONTHLY` and all others as inferred `OTHER`. Insufficient comparable neighbors produce null and `INSUFFICIENT`.
+## Daily expiry positioning
 
-The preliminary score is normalized over available components: volume share (max 40; 10/20/30/40/50% → 0/10/20/30/40), neighbor ratio (max 30; 1.2/1.5/2/3/5x → 0/5/10/20/30), and absolute volume skew (max 30; .10/.30/.50/.70 → 0/10/20/30). Eligibility begins at 40. Ticker score is the highest eligible 0–90 DTE expiry. At most four tickers and one qualifying expiry per VERY_SHORT/SHORT/MEDIUM bucket are selected (three per ticker).
+`oi-per-expiry` supplies Call OI and Put OI. For each ticker's 0–180 surface:
 
-## Contract eligibility and score
+- `total_oi = call_oi + put_oi`;
+- `total_oi_share = expiry_total_oi / ticker_total_oi`;
+- `call_oi_share = expiry_call_oi / ticker_call_oi`;
+- `put_oi_share = expiry_put_oi / ticker_put_oi`;
+- `oi_skew = (call_oi - put_oi) / total_oi`.
 
-Invalid required identity, DTE above 90, unusable supplied quote, or spread above 50% of mid is a hard rejection. Missing bid/ask is not fabricated and makes liquidity unavailable. There is no minimum OI filter. `LOW_OI_BASE` marks previous OI below 100. `volume_oi_ratio = volume / max(previous_oi, 1)` and never proves opening activity.
+Zero denominators yield null. OI Skew is context, never investor direction.
 
-Estimated premium is `volume × 100 × price proxy`; proxy order is intraday VWAP, suitable vendor aggregate, last, then valid midpoint. Its method is persisted and the result remains an estimate.
+Across distinct valid OI observation sessions, 3/5/10-window features are net OI change, OI growth,
+total/Call/Put OI-share change, positive/negative interval counts, and build/decline persistence.
+Share changes are percentage-point differences: 8% → 24% is +16pp. Missing window history is null.
+Confidence is `<3 INSUFFICIENT`, `3–4 LOW`, `5–9 MEDIUM`, `10+ FULL`.
 
-Contract score is `earned available points / available maximum points × 100`:
+For each available expiry window, fixed-scale Persistent Positioning components are:
 
-- relative activity max 20: Volume/OI max 12 at .5/1/2/5/10x → 0/4/7/10/12; volume max 8 at 100/500/2,000/10,000 → 0/3/5/8;
-- premium max 20 at $0/$50k/$150k/$500k/$1m/$5m → 0/2/6/10/14/20;
-- historical max 20: robust Z at 1/2/3/4/5 → 0/5/10/15/20, available only with at least 10 observations, otherwise `HISTORY_INSUFFICIENT`;
-- intraday burst max 15 at 2/3/5/10x → 0/5/10/15;
-- liquidity max 15 at spread 5/10/20/30/50% → 15/13/10/6/2;
-- moneyness max 10 by abs(delta): 0–.10=2, .10–.20=5, .20–.35=8, .35–.65=10, .65–.80=8, .80–.90=5, .90–1=4. Below .10 adds `LOTTO_RISK`.
+- absolute OI Share Change max 40: .5/1/2/5/10pp → 0/8/16/28/40;
+- absolute OI Growth max 30: 5/10/25/50/100% → 0/5/12/20/30;
+- direction-matching interval share max 30: 50/60/70/80/90/100% → 0/5/10/18/25/30.
 
-Classification is IGNORE below 50, OBSERVE 50–64, CANDIDATE 65–74, STRONG 75–84, EXTREME 85+. A `CONTRACT_CANDIDATE` additionally requires score at least 65 and basis at least 60. Intraday drilldown is capped at 12 contracts per scan and rescoring follows the same formula.
+The overall score is the maximum available 3/5/10-window score, not an average. Net positive is
+`PERSISTENT_BUILD`, net negative is `PERSISTENT_DECLINE`; neither implies trade direction.
 
-## Final expiry score
+## Same-Day Activity Score
 
-The normalized components are OI share max 25 (5/10/20/30/40/50% → 0/5/10/15/20/25), neighbor max 25 (1.2/1.5/2/3/5x → 0/5/10/15/25), volume share max 20 (5/10/20/30/40/50% → 0/4/8/12/16/20), strongest absolute OI/volume/premium skew max 15 (.10/.30/.50/.70 → 0/5/10/15), and premium share max 15 (5/10/20/30/40/50% → 0/3/6/9/12/15). Missing optional evidence is unavailable and the score is rescaled. At least 65 is `EXPIRY_CANDIDATE`; at least 80 is `STRONG_EXPIRY_CANDIDATE`.
+`expiry-breakdown` supplies per-expiry total volume. Within 0–180 DTE:
 
-## Strike clusters and summaries
+- Expiry Volume Share max 60: 5/10/20/30/40/50% → 0/10/25/40/50/60;
+- comparable-expiry Volume Neighbor Ratio max 40: 1.2/1.5/2/3/5x → 0/8/15/25/40.
 
-A cluster contains at least two candidates with the same ticker, expiry, and right. The complete same-side strike ladder is used; adjacent candidates can bridge one non-candidate listed strike, and an available-spot moneyness span cannot exceed 20%. Calls and Puts never merge.
+Interpolation is piecewise-linear and capped. Comparable peers prefer the same inferred/vendor expiry
+type. An unavailable component stays missing; points are not rescaled to 100. Basis weight, coverage,
+and missing components are persisted.
 
-Cluster score normalizes contract strength max 25, same-side premium share max 25 (10/20/40/60% → 0/5/15/25), volume share max 20 (10/20/40/60% → 0/5/12/20), strike coherence max 20 (2/3/4+ → 10/15/20, minus 5 for a one-strike gap), and liquidity max 10. Score at least 65 is `VALID_CLUSTER`; at least 80 is `STRONG_CLUSTER`. Shapes are TIGHT_CLUSTER at no more than 7.5% moneyness span, BROAD_CLUSTER up to 20%, or LADDER for at least three strikes with monotonic premium/volume progression across at least 75% of adjacent pairs. Premium-weighted strike is a positioning center, never a target.
+Ticker-day `options-volume` Call/Put volume, OI, skew, and premiums remain ticker-only context and
+must not be attributed to an expiry.
 
-Bucket summaries may say `CALL_DOMINANT`, `PUT_DOMINANT`, `TWO_SIDED`, or `NO_STRONG_STRUCTURE`. An expiry candidate with a valid cluster and no hard rejection may be `PROVISIONAL_POSITIONING_CANDIDATE`. OI state is limited to `PENDING`, `CONFIRMED`, `NOT_CONFIRMED`, and `INCONCLUSIVE`. None is a trade recommendation.
+## Dual Discovery
+
+`expiry_discovery_score = MAX(same_day_activity_score, persistent_positioning_score)`.
+Discovery source is SAME_DAY, PERSISTENT, or BOTH based on thresholds 40 and 65 respectively. A
+separate configurable `STRUCTURAL_COLD_START_ELIGIBLE` flag uses current OI Share ≥20% while history
+has fewer than three observations; it never changes the persistent score. At most four tickers are
+selected, with at most one strongest eligible VERY_SHORT, SHORT, and MEDIUM expiry per ticker.
+
+## Complete contract history
+
+A daily chain is accepted only when `_meta.truncated == false` and returned rows equal
+`total_contracts`. Calls and Puts are archived symmetrically with OI, quotes, IV, Greeks, spot, source
+IDs, and vendor timestamps. `(ticker, contract_symbol, vendor_oi_date)` is unique and append-only.
+Two observations give `delta_oi_1 = current - prior`; first observation has unknown prior, never zero.
+Absence on a later day does not imply closing activity.
+
+Contract persistence uses the maximum available 3/5/10-window score:
+
+- absolute OI growth max 35: 10/25/50/100/200% → 0/8/16/25/35;
+- absolute net build / current same-side expiry OI max 35:
+  .25/.5/1/2/5% → 0/5/12/22/35;
+- direction-matching interval share max 30 with the same 50–100% anchors.
+
+## Contract Positioning Structure Score
+
+The fixed 0–100 score uses only runtime-verified chain fields:
+
+- contract OI / same-side expiry OI max 40: .5/1/2/5/10/20% → 0/5/12/22/32/40;
+- OI / median nearby same-right strike OI max 30: 1.2/1.5/2/3/5x → 0/5/10/18/30;
+- bid/ask spread quality max 15: 5/10/20/30/50% → 15/13/10/6/2;
+- abs(delta) quality max 15: 0–.10=3, .10–.20=7, .20–.35=12, .35–.65=15,
+  .65–.80=12, .80–.90=8, .90–1=6.
+
+Spread above 50% is a structural-candidate hard reject. Low delta adds `LOTTO_RISK`, not rejection.
+Classifications are IGNORE <50, OBSERVE 50–64, STRUCTURAL_CANDIDATE 65–74, STRONG_STRUCTURE 75–84,
+EXTREME_STRUCTURE ≥85. Component values are preserved. Contract persistence and Radar remain separate
+fields; no opaque combined score is created.
+
+## OI Change Radar
+
+The ranked `oi-change` subset is persisted when requested for selected tickers. Presence adds
+supplemental previous/current/delta OI, volume, trades, price, premium, rank, quote, and date evidence.
+Absence is `NOT_OBSERVED`, never negative evidence. Radar is never an OI Share denominator or daily
+memory source.
+
+## Cluster Positioning Score
+
+Calls and Puts never merge. Candidate strikes may bridge one listed strike and span at most 20% of
+available spot. Components are:
+
+- OI-weighted constituent structure max 30;
+- cluster OI / same-side expiry OI max 35: 5/10/20/40/60% → 0/5/12/22/35;
+- coherence max 25: 2/3/4+ strikes → 12/18/25, minus 5 for a one-strike gap;
+- aggregate constituent liquidity max 10.
+
+Score ≥65 is VALID_CLUSTER and ≥80 STRONG_CLUSTER. Context includes persistent build/decline counts,
+OI-weighted persistent score, and available window net OI change. It is not a final trading score.
+
+## Intraday
+
+Contract intraday is research-only because runtime validation returned only HTTP 202. It is not
+required, not aggressively polled, and has weight 0 in every v1.1 score.

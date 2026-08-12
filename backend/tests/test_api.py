@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api.routes.scans import _max_numeric
 from app.db.session import get_db_session
 from app.main import app
 from app.scanner.service import ConcurrentScanError
@@ -30,14 +31,17 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
     class FakeSession:
         def __init__(self) -> None:
             self.values = iter([refresh, usage])
+            self.scalar_statements = []
 
         def execute(self, _statement):  # type: ignore[no-untyped-def]
             return None
 
         def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            self.scalar_statements.append(_statement)
             return next(self.values)
 
-    app.dependency_overrides[get_db_session] = lambda: FakeSession()
+    session = FakeSession()
+    app.dependency_overrides[get_db_session] = lambda: session
     try:
         response = TestClient(app).get("/api/v1/system/status")
     finally:
@@ -57,6 +61,7 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
         "database_status": "connected",
         "scheduling_enabled": False,
     }
+    assert "/v1/discover" not in str(session.scalar_statements[1])
 
 
 def test_system_status_reports_database_unavailable_without_vendor_call() -> None:
@@ -87,6 +92,11 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
         app.dependency_overrides.clear()
     assert response.status_code == 200
     assert response.json() == {"scan": None, "results": []}
+
+
+def test_latest_scan_numeric_summary_ignores_unavailable_values() -> None:
+    assert _max_numeric([None, 82, None]) == 82.0
+    assert _max_numeric([None, None]) is None
 
 
 def test_concurrent_mag7_scan_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]

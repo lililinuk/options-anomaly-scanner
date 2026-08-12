@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import statistics
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -265,3 +265,231 @@ def first_meta(payload: Any, *names: str) -> Any:
                 if name in meta:
                     return meta[name]
     return None
+
+
+def _datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class DailyExpiryOi:
+    expiration: date
+    vendor_date: date
+    vendor_as_of: datetime
+    call_oi: int
+    put_oi: int
+
+
+def parse_daily_expiry_oi(payload: Any) -> list[DailyExpiryOi]:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+    as_of = _datetime(data.get("as_of"))
+    expiries = data.get("expiries")
+    if as_of is None or not isinstance(expiries, list):
+        return []
+    parsed: list[DailyExpiryOi] = []
+    for row in expiries:
+        if not isinstance(row, dict):
+            continue
+        expiration = _date(row, "expiry", "expiration")
+        vendor_date = _date(row, "date") or as_of.date()
+        call_oi = _number(row, "call_oi")
+        put_oi = _number(row, "put_oi")
+        if expiration is None or call_oi is None or put_oi is None:
+            continue
+        parsed.append(DailyExpiryOi(expiration, vendor_date, as_of, int(call_oi), int(put_oi)))
+    return sorted(parsed, key=lambda item: item.expiration)
+
+
+@dataclass(frozen=True)
+class ArchivedChainContract:
+    symbol: str
+    expiration: date
+    right: str
+    strike: Decimal
+    open_interest: int
+    bid: Decimal | None
+    ask: Decimal | None
+    implied_volatility: Decimal | None
+    delta: Decimal | None
+    gamma: Decimal | None
+    theta: Decimal | None
+    vega: Decimal | None
+    charm: Decimal | None
+
+
+@dataclass(frozen=True)
+class CompleteChain:
+    complete: bool
+    contracts: tuple[ArchivedChainContract, ...]
+    returned_count: int
+    total_contracts: int | None
+    truncated: bool | None
+    underlying_price: Decimal | None
+    quote_as_of: datetime | None
+    greeks_as_of: datetime | None
+    underlying_as_of: datetime | None
+    open_interest_as_of: datetime | None
+
+
+def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteChain:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    meta = payload.get("_meta") if isinstance(payload, dict) else None
+    data = data if isinstance(data, dict) else {}
+    meta = meta if isinstance(meta, dict) else {}
+    rows = data.get("contracts") if isinstance(data.get("contracts"), list) else []
+    total_raw = data.get("total_contracts")
+    total = int(total_raw) if isinstance(total_raw, (int, float)) else None
+    truncated = meta.get("truncated") if isinstance(meta.get("truncated"), bool) else None
+    complete = truncated is False and total is not None and len(rows) == total
+    contracts: list[ArchivedChainContract] = []
+    if complete:
+        for row in rows:
+            if not isinstance(row, dict):
+                complete = False
+                break
+            symbol = _text(row, "contract_symbol")
+            expiration = _date(row, "expiration")
+            right = (_text(row, "right") or "").upper()
+            strike = _decimal(_number(row, "strike_usd"))
+            oi = _number(row, "open_interest")
+            if (
+                not symbol
+                or expiration != expected_expiration
+                or right not in {"C", "P"}
+                or strike is None
+                or oi is None
+            ):
+                complete = False
+                break
+            contracts.append(
+                ArchivedChainContract(
+                    symbol=symbol,
+                    expiration=expiration,
+                    right=right,
+                    strike=strike,
+                    open_interest=max(0, int(oi)),
+                    bid=_decimal(_number(row, "bid_usd")),
+                    ask=_decimal(_number(row, "ask_usd")),
+                    implied_volatility=_decimal(_number(row, "implied_vol_pct")),
+                    delta=_decimal(_number(row, "delta")),
+                    gamma=_decimal(_number(row, "gamma")),
+                    theta=_decimal(_number(row, "theta")),
+                    vega=_decimal(_number(row, "vega")),
+                    charm=_decimal(_number(row, "charm")),
+                )
+            )
+    if not complete:
+        contracts = []
+    return CompleteChain(
+        complete=complete,
+        contracts=tuple(contracts),
+        returned_count=len(rows),
+        total_contracts=total,
+        truncated=truncated,
+        underlying_price=_decimal(_number(data, "underlying_price_usd")),
+        quote_as_of=_datetime(data.get("quote_as_of")),
+        greeks_as_of=_datetime(data.get("greeks_as_of")),
+        underlying_as_of=_datetime(data.get("underlying_as_of")),
+        open_interest_as_of=_datetime(data.get("open_interest_as_of")),
+    )
+
+
+@dataclass(frozen=True)
+class TickerActivity:
+    vendor_as_of: datetime | None
+    vendor_date: date | None
+    call_volume: int | None
+    put_volume: int | None
+    call_oi: int | None
+    put_oi: int | None
+    premiums: dict[str, float]
+
+
+def parse_ticker_activity(payload: Any) -> TickerActivity:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    data = data if isinstance(data, dict) else {}
+    day = data.get("day") if isinstance(data.get("day"), dict) else {}
+    premiums = {
+        key: float(value)
+        for key, value in day.items()
+        if "premium" in key and isinstance(value, (int, float))
+    }
+
+    def integer(name: str) -> int | None:
+        value = _number(day, name)
+        return int(value) if value is not None else None
+
+    return TickerActivity(
+        vendor_as_of=_datetime(data.get("as_of")),
+        vendor_date=_date(day, "date"),
+        call_volume=integer("call_volume"),
+        put_volume=integer("put_volume"),
+        call_oi=integer("call_open_interest"),
+        put_oi=integer("put_open_interest"),
+        premiums=premiums,
+    )
+
+
+@dataclass(frozen=True)
+class RadarContract:
+    symbol: str
+    observation_date: date | None
+    previous_date: date | None
+    previous_oi: int | None
+    current_oi: int | None
+    delta_oi: int | None
+    relative_change: float | None
+    volume: int | None
+    trades: int | None
+    average_price: float | None
+    premium: float | None
+    rank: int | None
+    last_bid: float | None
+    last_ask: float | None
+    last_fill: float | None
+
+
+def parse_oi_change_radar(payload: Any) -> list[RadarContract]:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    rows = (
+        data.get("contracts")
+        if isinstance(data, dict) and isinstance(data.get("contracts"), list)
+        else []
+    )
+    result: list[RadarContract] = []
+    for row in rows:
+        if not isinstance(row, dict) or not _text(row, "option_symbol"):
+            continue
+
+        def integer(name: str, source: dict[str, Any] = row) -> int | None:
+            value = _number(source, name)
+            return int(value) if value is not None else None
+
+        result.append(
+            RadarContract(
+                symbol=_text(row, "option_symbol") or "",
+                observation_date=_date(row, "date"),
+                previous_date=_date(row, "prev_date"),
+                previous_oi=integer("prev_oi"),
+                current_oi=integer("oi"),
+                delta_oi=integer("oi_diff"),
+                relative_change=_number(row, "oi_change"),
+                volume=integer("volume"),
+                trades=integer("trades"),
+                average_price=_number(row, "avg_price_usd"),
+                premium=_number(row, "premium_usd"),
+                rank=integer("rank"),
+                last_bid=_number(row, "last_bid_usd"),
+                last_ask=_number(row, "last_ask_usd"),
+                last_fill=_number(row, "last_fill_usd"),
+            )
+        )
+    return result

@@ -1,20 +1,56 @@
-# Scan Orchestration V1
+# Scan Orchestration — Phase 2A v1.1
 
-## Manual Phase 2A flow
+Specification: `signal_spec_v1.1_phase2a`
 
-Every invocation receives a UUID `scan_run_id`. PostgreSQL advisory locking plus a persisted RUNNING check rejects concurrent scans. There is no scheduler (`scan_schedule_enabled=false`). The CLI is `python -m app.cli run-mag7-scan`; the dashboard uses the backend-only `POST /api/v1/scans/mag7`. The in-process HTTP request is intentionally not a durable production job queue: a process restart can interrupt it, and later production work should provide durable execution without changing the scan contract.
+## Workflow A — Daily OI Archive
 
-1. **S0 PREFLIGHT** checks PostgreSQL, persisted `/discover` capabilities, known quota, conflicts, and New York market date. It refreshes only dynamic DTE fields.
-2. **S1 OI CONFIRMATION** inspects only existing PENDING records. It makes no broad OI request when none exist and appends confirmation events without changing Day-0 scores.
-3. **S2/S3 AGGREGATE + PRELIMINARY** calls `volume-oi-per-expiry` once per MAG7 ticker, persists raw evidence, normalizes 0–180 DTE expiries, and scores them.
-4. **S4 SELECTION** chooses at most four eligible tickers and one qualifying expiry per short bucket.
-5. **S5 CHAIN + CONTRACT SCORE** calls one chain snapshot only for each selected ticker/expiry and retains Calls and Puts.
-6. **S6 INTRADAY** deepens no more than 12 prioritized contracts across the entire scan and then rescores them.
-7. **S7 FINAL EXPIRY + CLUSTERS** calculates final expiry evidence and same-side strike clusters.
-8. **S8 SUMMARY** appends per-ticker/per-bucket positioning summaries.
+CLI: `python -m app.cli archive-mag7-oi`
 
-The cold-start worst case is 7 aggregate + 12 chain + 12 intraday = 31 successful data requests. Per-scan hard limits remain 75 consumed units and 100 actual network attempts. A successful 200 data response counts one unit; attempts are counted independently. At a limit, deepening stops and status is `PARTIAL_BUDGET_LIMIT`. Other missing vendor data produces `PARTIAL`, never fake completeness.
+The archive is an idempotent backend job protected by a PostgreSQL advisory lock. Configuration is
+enabled at `Asia/Singapore` 12:00 with max DTE 180, but the repository deliberately contains no
+in-process scheduler: deployment must invoke the CLI once daily using a durable external scheduler.
+The trigger clock does not define data dates.
 
-Raw source reuse is keyed by endpoint plus canonical parameters for 30 minutes. Cache hits consume neither quota nor network attempts. Raw payloads are persisted before normalized/derived records; every derived record carries scan, source request/raw IDs where relevant, and `signal_spec_v1.0_phase2a`.
+For each MAG7 ticker the job:
 
-The browser only calls Next.js `/api/mag7-scan`, which uses the fixed FastAPI MAG7 routes. It has no generic vendor proxy and never receives the Nightwatch key. Phase 2B price/IV/GEX confirmation, direction, Tradeability, scheduling, alerts, and trade execution are out of scope.
+1. requests `oi-per-expiry` and reads its vendor date/as-of;
+2. skips as `NO_NEW_VENDOR_OI_SNAPSHOT` when that ticker/date already exists;
+3. writes the complete 0–180 DTE expiry OI surface and side/total shares;
+4. requests one chain snapshot per scoped expiration;
+5. accepts and persists contracts only when not truncated and returned count equals total count;
+6. preserves raw evidence and marks incomplete expiry chains without fabricating contracts.
+
+Budgets are 250 consumed units and 350 network attempts. A hard stop is
+`PARTIAL_ARCHIVE_BUDGET_LIMIT`; unattempted/incomplete expiries are explicit. The job persists run,
+ticker, and expiry completeness plus all usage evidence. Same-date replay never overwrites or adds
+duplicate normalized snapshots.
+
+## Workflow B — MAG7 Same-Day Scan
+
+CLI: `python -m app.cli run-mag7-scan`; dashboard: fixed backend-only `POST /api/v1/scans/mag7`.
+The browser calls only Next.js `/api/mag7-scan` and never Nightwatch.
+
+1. S0 validates PostgreSQL, capability snapshots, budget, and New York market date.
+2. S2 requests `expiry-breakdown` and `options-volume` once per ticker; raw evidence and ticker-only
+   context are persisted.
+3. S3 calculates Same-Day Activity independently from archive-backed expiry persistence, then uses
+   maximum—not average—for Dual Discovery.
+4. S4 selects at most four tickers and one strongest eligible expiry in each 0–90 DTE bucket.
+5. S5 reads the latest valid complete chain from PostgreSQL, calculates contract structure and
+   persistence, requests one ranked OI Change Radar payload per selected ticker, and builds same-side
+   OI clusters.
+6. S6 persists bucket summaries and safe dashboard fields.
+
+The interactive budget remains 75 consumed units and 100 attempts. It never rebuilds the daily
+0–180 archive and never calls contract intraday. Thirty-minute raw reuse remains available for fresh
+same-day endpoints. Radar absence is neutral.
+
+Raw vendor responses are persisted before normalized/derived rows. Every v1.1 run snapshots its
+configuration and carries `signal_spec_v1.1_phase2a`; v1.0 records remain immutable evidence.
+
+## Scheduling requirement
+
+Use a durable platform scheduler (cron, systemd timer, managed job scheduler, or equivalent) to run
+the archive CLI at configured Singapore local time. Overlap must be disabled, process exit must be
+observed, and retries must invoke the same idempotent command. No Celery/Redis or unsafe application
+background task was added.

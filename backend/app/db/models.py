@@ -188,6 +188,7 @@ class TickerScanResult(Base):
     raw_payload_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     specification_version: Mapped[str] = mapped_column(String(64))
+    activity_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class ExpiryObservation(Base):
@@ -229,6 +230,21 @@ class ExpiryObservation(Base):
     raw_payload_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     specification_version: Mapped[str] = mapped_column(String(64))
+    vendor_oi_date: Mapped[date | None] = mapped_column(Date)
+    call_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    put_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    same_day_activity_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    same_day_score_basis_weight: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    same_day_data_coverage: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    missing_same_day_components: Mapped[list[str] | None] = mapped_column(JSONB)
+    persistent_positioning_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    persistent_state: Mapped[str | None] = mapped_column(String(32))
+    persistent_winning_window: Mapped[int | None] = mapped_column(Integer)
+    history_confidence: Mapped[str | None] = mapped_column(String(16))
+    persistent_components: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    discovery_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    discovery_source: Mapped[str | None] = mapped_column(String(16))
+    structural_cold_start_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class ContractScanObservation(Base):
@@ -251,9 +267,9 @@ class ContractScanObservation(Base):
     bucket_at_detection: Mapped[str] = mapped_column(String(32))
     current_dte: Mapped[int] = mapped_column(Integer)
     current_bucket: Mapped[str | None] = mapped_column(String(32))
-    volume: Mapped[int] = mapped_column(BigInteger)
-    previous_oi: Mapped[int] = mapped_column(BigInteger)
-    volume_oi_ratio: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    volume: Mapped[int | None] = mapped_column(BigInteger)
+    previous_oi: Mapped[int | None] = mapped_column(BigInteger)
+    volume_oi_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     bid: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     ask: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     mid: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
@@ -265,8 +281,8 @@ class ContractScanObservation(Base):
     premium_quality: Mapped[str | None] = mapped_column(String(40))
     historical_robust_z: Mapped[Decimal | None] = mapped_column(Numeric(12, 5))
     intraday_burst_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 5))
-    anomaly_score: Mapped[Decimal] = mapped_column(Numeric(8, 3))
-    score_basis_weight: Mapped[Decimal] = mapped_column(Numeric(8, 3))
+    anomaly_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    score_basis_weight: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     classification: Mapped[str] = mapped_column(String(24))
     is_candidate: Mapped[bool] = mapped_column(Boolean)
     hard_reject_reason: Mapped[str | None] = mapped_column(String(64))
@@ -274,6 +290,19 @@ class ContractScanObservation(Base):
     components: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     specification_version: Mapped[str] = mapped_column(String(64))
+    current_oi: Mapped[int | None] = mapped_column(BigInteger)
+    contract_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    neighbor_strike_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 5))
+    structure_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    structure_components: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    persistent_positioning_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    persistent_state: Mapped[str | None] = mapped_column(String(32))
+    persistent_winning_window: Mapped[int | None] = mapped_column(Integer)
+    history_observation_count: Mapped[int | None] = mapped_column(Integer)
+    history_confidence: Mapped[str | None] = mapped_column(String(16))
+    persistent_components: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    oi_change_radar_status: Mapped[str | None] = mapped_column(String(24))
+    oi_change_radar_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class StrikeCluster(Base):
@@ -288,7 +317,7 @@ class StrikeCluster(Base):
     min_strike: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     max_strike: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     contract_count: Mapped[int] = mapped_column(Integer)
-    total_volume: Mapped[int] = mapped_column(BigInteger)
+    total_volume: Mapped[int | None] = mapped_column(BigInteger)
     total_estimated_premium: Mapped[Decimal | None] = mapped_column(Numeric(22, 4))
     total_oi: Mapped[int] = mapped_column(BigInteger)
     premium_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
@@ -300,6 +329,145 @@ class StrikeCluster(Base):
     shape: Mapped[str] = mapped_column(String(24))
     source_contract_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     components: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    specification_version: Mapped[str] = mapped_column(String(64))
+    cluster_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    positioning_center: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    persistent_build_count: Mapped[int | None] = mapped_column(Integer)
+    persistent_decline_count: Mapped[int | None] = mapped_column(Integer)
+    oi_weighted_persistent_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    cluster_net_oi_changes: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class DailyOiArchiveRun(Base):
+    __tablename__ = "daily_oi_archive_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trigger: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(48))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    specification_version: Mapped[str] = mapped_column(String(64))
+    consumed_quota_units: Mapped[int] = mapped_column(Integer, default=0)
+    network_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class DailyOiArchiveTicker(Base):
+    __tablename__ = "daily_oi_archive_tickers"
+    __table_args__ = (
+        UniqueConstraint("archive_run_id", "ticker", name="uq_archive_ticker_run_ticker"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    archive_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("daily_oi_archive_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16), index=True)
+    vendor_oi_date: Mapped[date | None] = mapped_column(Date)
+    vendor_oi_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(48))
+    expiries_expected: Mapped[int] = mapped_column(Integer, default=0)
+    complete_chains: Mapped[int] = mapped_column(Integer, default=0)
+    incomplete_chains: Mapped[int] = mapped_column(Integer, default=0)
+    contracts_persisted: Mapped[int] = mapped_column(Integer, default=0)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ExpiryOiDailySnapshot(Base):
+    __tablename__ = "expiry_oi_daily_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "expiration", "vendor_oi_date", name="uq_expiry_oi_ticker_expiry_date"
+        ),
+        Index("ix_expiry_oi_history", "ticker", "expiration", "vendor_oi_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    archive_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("daily_oi_archive_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    expiration: Mapped[date] = mapped_column(Date)
+    vendor_oi_date: Mapped[date] = mapped_column(Date)
+    vendor_oi_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    call_oi: Mapped[int] = mapped_column(BigInteger)
+    put_oi: Mapped[int] = mapped_column(BigInteger)
+    total_oi: Mapped[int] = mapped_column(BigInteger)
+    call_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    put_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    total_oi_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    dte: Mapped[int] = mapped_column(Integer)
+    bucket: Mapped[str] = mapped_column(String(32))
+    chain_status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
+    source_request_id: Mapped[str] = mapped_column(String(128))
+    specification_version: Mapped[str] = mapped_column(String(64))
+
+
+class ContractOiDailySnapshot(Base):
+    __tablename__ = "contract_oi_daily_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "contract_symbol", "vendor_oi_date", name="uq_contract_oi_ticker_symbol_date"
+        ),
+        Index("ix_contract_oi_history", "ticker", "contract_symbol", "vendor_oi_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    archive_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("daily_oi_archive_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    contract_symbol: Mapped[str] = mapped_column(String(64))
+    vendor_oi_date: Mapped[date] = mapped_column(Date)
+    vendor_oi_as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expiration: Mapped[date] = mapped_column(Date)
+    right: Mapped[str] = mapped_column(String(1))
+    strike: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    dte: Mapped[int] = mapped_column(Integer)
+    bucket: Mapped[str] = mapped_column(String(32))
+    open_interest: Mapped[int] = mapped_column(BigInteger)
+    bid: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    ask: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    implied_volatility: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    delta: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    gamma: Mapped[Decimal | None] = mapped_column(Numeric(18, 10))
+    theta: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    vega: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    charm: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    underlying_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    quote_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    greeks_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    underlying_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
+    source_request_id: Mapped[str] = mapped_column(String(128))
+    specification_version: Mapped[str] = mapped_column(String(64))
+
+
+class OiChangeRadarObservation(Base):
+    __tablename__ = "oi_change_radar_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_request_id", "contract_symbol", name="uq_oi_radar_request_contract"
+        ),
+        Index("ix_oi_radar_ticker_date", "ticker", "observation_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scan_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scan_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    contract_symbol: Mapped[str] = mapped_column(String(64))
+    observation_date: Mapped[date | None] = mapped_column(Date)
+    previous_date: Mapped[date | None] = mapped_column(Date)
+    previous_oi: Mapped[int | None] = mapped_column(BigInteger)
+    current_oi: Mapped[int | None] = mapped_column(BigInteger)
+    delta_oi: Mapped[int | None] = mapped_column(BigInteger)
+    relative_oi_change: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    volume: Mapped[int | None] = mapped_column(BigInteger)
+    trades: Mapped[int | None] = mapped_column(BigInteger)
+    average_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    premium: Mapped[Decimal | None] = mapped_column(Numeric(22, 4))
+    rank: Mapped[int | None] = mapped_column(Integer)
+    last_bid: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    last_ask: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    last_fill: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
+    source_request_id: Mapped[str] = mapped_column(String(128))
     specification_version: Mapped[str] = mapped_column(String(64))
 
 

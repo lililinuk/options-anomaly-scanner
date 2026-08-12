@@ -3,24 +3,60 @@ from typing import Final
 
 from app.models.signals import DEFAULT_DTE_BUCKET_RULES
 
-SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.0_phase2a"
+SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.1_phase2a"
 
 
 @dataclass(frozen=True)
 class ScannerLimits:
     max_deep_tickers: int = 4
     max_expiries_per_ticker: int = 3
-    max_intraday_contracts: int = 12
     max_consumed_units_per_scan: int = 75
     max_network_attempts_per_scan: int = 100
     cache_cooldown_minutes: int = 30
+    same_day_eligibility_score: float = 40
+    persistent_eligibility_score: float = 65
+    structural_cold_start_oi_share: float = 0.20
+
+
+@dataclass(frozen=True)
+class ArchiveLimits:
+    enabled: bool = True
+    timezone: str = "Asia/Singapore"
+    local_time: str = "12:00"
+    max_dte: int = 180
+    max_consumed_units: int = 250
+    max_network_attempts: int = 350
 
 
 UNIVERSE: Final = ("AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA")
 LIMITS: Final = ScannerLimits()
+ARCHIVE_LIMITS: Final = ArchiveLimits()
 
 # Every financial threshold is versioned configuration, never embedded in scoring control flow.
 SCORE_ANCHORS: Final[dict[str, tuple[tuple[float, float], ...]]] = {
+    "same_day_volume_share": (
+        (0.05, 0), (0.10, 10), (0.20, 25), (0.30, 40), (0.40, 50), (0.50, 60)
+    ),
+    "same_day_volume_neighbor": ((1.2, 0), (1.5, 8), (2.0, 15), (3.0, 25), (5.0, 40)),
+    "expiry_persistent_share_change": (
+        (0.005, 0), (0.01, 8), (0.02, 16), (0.05, 28), (0.10, 40)
+    ),
+    "expiry_persistent_growth": ((0.05, 0), (0.10, 5), (0.25, 12), (0.50, 20), (1.0, 30)),
+    "directional_persistence": (
+        (0.50, 0), (0.60, 5), (0.70, 10), (0.80, 18), (0.90, 25), (1.0, 30)
+    ),
+    "contract_persistent_growth": (
+        (0.10, 0), (0.25, 8), (0.50, 16), (1.0, 25), (2.0, 35)
+    ),
+    "contract_persistent_build_share": (
+        (0.0025, 0), (0.005, 5), (0.01, 12), (0.02, 22), (0.05, 35)
+    ),
+    "contract_oi_share": (
+        (0.005, 0), (0.01, 5), (0.02, 12), (0.05, 22), (0.10, 32), (0.20, 40)
+    ),
+    "neighbor_strike_oi": ((1.2, 0), (1.5, 5), (2.0, 10), (3.0, 18), (5.0, 30)),
+    "structure_liquidity": ((0.05, 15), (0.10, 13), (0.20, 10), (0.30, 6), (0.50, 2)),
+    "cluster_oi_share": ((0.05, 0), (0.10, 5), (0.20, 12), (0.40, 22), (0.60, 35)),
     "prelim_volume_share": ((0.10, 0), (0.20, 10), (0.30, 20), (0.40, 30), (0.50, 40)),
     "prelim_neighbor": ((1.2, 0), (1.5, 5), (2.0, 10), (3.0, 20), (5.0, 30)),
     "prelim_skew": ((0.10, 0), (0.30, 10), (0.50, 20), (0.70, 30)),
@@ -76,6 +112,10 @@ def configuration_snapshot() -> dict[str, object]:
             },
         },
         "selection_and_budget": asdict(LIMITS),
-        "scheduling": {"enabled": False},
+        "daily_oi_archive": asdict(ARCHIVE_LIMITS),
+        "scheduling": {
+            "in_process": False,
+            "external_schedule_required": True,
+        },
         "score_anchors": {key: list(value) for key, value in SCORE_ANCHORS.items()},
     }

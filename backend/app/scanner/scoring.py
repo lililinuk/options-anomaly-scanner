@@ -238,3 +238,125 @@ def premium_weighted_strike(rows: Iterable[tuple[Decimal, float]]) -> Decimal | 
     return sum((strike * Decimal(str(premium)) for strike, premium in values), Decimal()) / Decimal(
         str(total)
     )
+
+
+@dataclass(frozen=True)
+class FixedScore:
+    score: float
+    basis: float
+    missing: tuple[str, ...]
+    components: dict[str, float]
+
+
+def same_day_activity_score(
+    volume_share: float | None, volume_neighbor_ratio: float | None
+) -> FixedScore:
+    configured = {
+        "expiry_volume_share": (
+            piecewise(volume_share, SCORE_ANCHORS["same_day_volume_share"]),
+            60.0,
+        )
+        if volume_share is not None
+        else None,
+        "comparable_expiry_volume_neighbor_ratio": (
+            piecewise(volume_neighbor_ratio, SCORE_ANCHORS["same_day_volume_neighbor"]),
+            40.0,
+        )
+        if volume_neighbor_ratio is not None
+        else None,
+    }
+    present = {key: value for key, value in configured.items() if value is not None}
+    return FixedScore(
+        score=round(sum(value[0] for value in present.values()), 3),
+        basis=sum(value[1] for value in present.values()),
+        missing=tuple(sorted(set(configured) - set(present))),
+        components={key: round(value[0], 3) for key, value in present.items()},
+    )
+
+
+def structure_moneyness_points(delta: float | None) -> float | None:
+    if delta is None:
+        return None
+    value = abs(delta)
+    if value < 0.10:
+        return 3
+    if value < 0.20:
+        return 7
+    if value < 0.35:
+        return 12
+    if value <= 0.65:
+        return 15
+    if value < 0.80:
+        return 12
+    if value < 0.90:
+        return 8
+    return 6
+
+
+@dataclass(frozen=True)
+class ContractStructureScore:
+    score: float
+    basis: float
+    classification: str
+    candidate: bool
+    hard_reject: str | None
+    flags: tuple[str, ...]
+    components: dict[str, float]
+
+
+def contract_structure_score(
+    *,
+    oi_share: float | None,
+    neighbor_ratio: float | None,
+    spread_pct: float | None,
+    delta: float | None,
+    quote_supplied: bool,
+) -> ContractStructureScore:
+    flags: list[str] = []
+    hard_reject = "SPREAD_OVER_50_PERCENT" if spread_pct is not None and spread_pct > 0.50 else None
+    if quote_supplied and spread_pct is None:
+        hard_reject = "UNUSABLE_QUOTE"
+    if delta is not None and abs(delta) < 0.10:
+        flags.append("LOTTO_RISK")
+    values = {
+        "same_side_expiry_oi_concentration": (
+            piecewise(oi_share, SCORE_ANCHORS["contract_oi_share"]),
+            40.0,
+        )
+        if oi_share is not None
+        else None,
+        "neighbor_strike_oi_anomaly": (
+            piecewise(neighbor_ratio, SCORE_ANCHORS["neighbor_strike_oi"]),
+            30.0,
+        )
+        if neighbor_ratio is not None
+        else None,
+        "liquidity_quality": (piecewise(spread_pct, SCORE_ANCHORS["structure_liquidity"]), 15.0)
+        if spread_pct is not None
+        else None,
+        "moneyness_delta_quality": (structure_moneyness_points(delta), 15.0)
+        if delta is not None
+        else None,
+    }
+    present = {key: value for key, value in values.items() if value is not None}
+    score = round(sum(value[0] for value in present.values()), 3)
+    classification = (
+        "EXTREME_STRUCTURE"
+        if score >= 85
+        else "STRONG_STRUCTURE"
+        if score >= 75
+        else "STRUCTURAL_CANDIDATE"
+        if score >= 65
+        else "OBSERVE"
+        if score >= 50
+        else "IGNORE"
+    )
+    return ContractStructureScore(
+        score=score,
+        basis=sum(value[1] for value in present.values()),
+        classification=classification,
+        candidate=score >= 65 and hard_reject is None,
+        hard_reject=hard_reject,
+        flags=tuple(flags),
+        components={key: round(value[0], 3) for key, value in present.items()},
+    )

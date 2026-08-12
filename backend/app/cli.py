@@ -11,7 +11,9 @@ from app.metadata.service import ApiUsageCollector, refresh_metadata
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
 from app.persistence.metadata import MetadataRepository
-from app.scanner.service import ConcurrentScanError, Mag7Scanner
+from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
+from app.scanner.service import ConcurrentScanError
+from app.scanner.v11 import Mag7Scanner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,7 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands.add_parser(
         "run-mag7-scan",
-        help="Run one budget-bounded manual Phase 2A MAG7 positioning scan",
+        help="Run one budget-bounded manual Phase 2A v1.1 dual-discovery scan",
+    )
+    subcommands.add_parser(
+        "archive-mag7-oi",
+        help="Idempotently archive complete 0-180 DTE MAG7 daily OI snapshots",
     )
     return parser
 
@@ -100,12 +106,49 @@ async def run_mag7_scan() -> int:
     return 0
 
 
+async def run_archive_mag7_oi() -> int:
+    settings = get_settings()
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=min(settings.nightwatch_max_concurrency, 4),
+            ) as client:
+                summary = await DailyOiArchiver(session, client).execute(trigger="cli")
+    except ArchiveConcurrentError as error:
+        print(f"Daily OI archive not started: {error}", file=sys.stderr)
+        return 4
+    except (SQLAlchemyError, NightwatchError, RuntimeError) as error:
+        print(f"Daily OI archive failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    dates = ",".join(
+        f"{ticker}:{value or 'unavailable'}"
+        for ticker, value in sorted(summary.vendor_dates.items())
+    )
+    print(
+        f"Daily OI archive: archive_run_id={summary.archive_run_id} status={summary.status} "
+        f"vendor_dates={dates} tickers_attempted={summary.tickers_attempted} "
+        f"tickers_skipped={summary.tickers_skipped} "
+        f"expiries_attempted={summary.expiries_attempted} "
+        f"complete_chains={summary.complete_chains} incomplete_chains={summary.incomplete_chains} "
+        f"contracts_persisted={summary.contracts_persisted} "
+        f"consumed_units={summary.consumed_quota_units} network_attempts={summary.network_attempts}"
+    )
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
         return asyncio.run(run_refresh_metadata())
     if args.command == "run-mag7-scan":
         return asyncio.run(run_mag7_scan())
+    if args.command == "archive-mag7-oi":
+        return asyncio.run(run_archive_mag7_oi())
     return 1
 
 
