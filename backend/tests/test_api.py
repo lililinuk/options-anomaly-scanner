@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes.scans import _max_numeric
+from app.api.routes.scans import _max_numeric, _radar_status
 from app.db.session import get_db_session
 from app.main import app
 from app.scanner.service import ConcurrentScanError
@@ -97,6 +97,12 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
 def test_latest_scan_numeric_summary_ignores_unavailable_values() -> None:
     assert _max_numeric([None, 82, None]) == 82.0
     assert _max_numeric([None, None]) is None
+
+
+def test_radar_status_distinguishes_absence_from_not_tested() -> None:
+    assert _radar_status("NVDA", {"NVDA"}, {"NVDA"}) == "OBSERVED"
+    assert _radar_status("META", {"META"}, set()) == "NOT_OBSERVED"
+    assert _radar_status("MSFT", set(), set()) == "NOT_TESTED"
 
 
 def test_concurrent_mag7_scan_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]

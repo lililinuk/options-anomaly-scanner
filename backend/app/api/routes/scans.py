@@ -13,6 +13,7 @@ from app.db.models import (
     ContractScanObservation,
     DailyOiArchiveRun,
     ExpiryObservation,
+    OiChangeRadarObservation,
     ScanRun,
     StrikeCluster,
 )
@@ -134,6 +135,23 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
             )
         )
     }
+    radar_tested_tickers = set(
+        session.scalars(
+            select(OiChangeRadarObservation.ticker)
+            .where(OiChangeRadarObservation.scan_run_id == run.id)
+            .distinct()
+        )
+    )
+    radar_match_tickers = set(
+        session.scalars(
+            select(ContractScanObservation.ticker)
+            .where(
+                ContractScanObservation.scan_run_id == run.id,
+                ContractScanObservation.oi_change_radar_status == "OBSERVED",
+            )
+            .distinct()
+        )
+    )
     results = []
     for ticker, item in sorted(by_ticker.items()):
         expiry = expiry_by_id.get(item.strongest_expiry_id)
@@ -165,9 +183,9 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
                 "contract_persistent_score": _max_numeric(
                     row.persistent_positioning_score for row in contract_rows
                 ),
-                "oi_change_radar_status": "OBSERVED"
-                if any(row.oi_change_radar_status == "OBSERVED" for row in contract_rows)
-                else "NOT_OBSERVED",
+                "oi_change_radar_status": _radar_status(
+                    ticker, radar_tested_tickers, radar_match_tickers
+                ),
                 "strongest_call_cluster": _cluster_label(call_cluster),
                 "strongest_put_cluster": _cluster_label(put_cluster),
                 "call_cluster_score": _float(call_cluster.cluster_score if call_cluster else None),
@@ -207,6 +225,14 @@ def _float(value: Any) -> float | None:
 def _max_numeric(values: Any) -> float | None:
     present = [float(value) for value in values if value is not None]
     return max(present) if present else None
+
+
+def _radar_status(ticker: str, tested: set[str], matched: set[str]) -> str:
+    if ticker in matched:
+        return "OBSERVED"
+    if ticker in tested:
+        return "NOT_OBSERVED"
+    return "NOT_TESTED"
 
 
 def _winning_share_change(expiry: ExpiryObservation | None) -> float | None:
