@@ -248,6 +248,48 @@ class FixedScore:
     components: dict[str, float]
 
 
+@dataclass(frozen=True)
+class ZeroDteScore:
+    score: float | None
+    basis: float
+    status: str
+    observation_count: int
+    mean: float | None
+    median: float | None
+    mad: float | None
+    percentile: float | None
+    robust_deviation: float | None
+    method: str
+    components: dict[str, float]
+    missing: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ComparableExpiry:
+    dte: int
+    volume: int
+    expiration_type: str | None = None
+
+
+@dataclass(frozen=True)
+class ComparablePeerSet:
+    ratio: float | None
+    count: int
+    dtes: tuple[int, ...]
+    quality: str
+    median_volume: float | None
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    score: float | None
+    primary: float | None
+    secondary: float | None
+    confirmation_bonus: float
+    source: str
+    evidence_breadth: int
+
+
 def same_day_activity_score(
     volume_share: float | None, volume_neighbor_ratio: float | None
 ) -> FixedScore:
@@ -271,6 +313,180 @@ def same_day_activity_score(
         basis=sum(value[1] for value in present.values()),
         missing=tuple(sorted(set(configured) - set(present))),
         components={key: round(value[0], 3) for key, value in present.items()},
+    )
+
+
+def zero_dte_activity_score(
+    current_volume_share: float | None,
+    prior_volume_shares: Sequence[float],
+    *,
+    required_observations: int = 20,
+    mad_epsilon: float = 1e-9,
+) -> ZeroDteScore:
+    """Score current 0DTE share against prior valid sessions, excluding current by contract."""
+
+    history = [float(value) for value in prior_volume_shares][-required_observations:]
+    count = len(history)
+    mean = statistics.fmean(history) if history else None
+    median = statistics.median(history) if history else None
+    mad = (
+        statistics.median(abs(value - median) for value in history)
+        if median is not None
+        else None
+    )
+    if current_volume_share is None:
+        return ZeroDteScore(
+            None,
+            0,
+            "CURRENT_OBSERVATION_UNAVAILABLE",
+            count,
+            mean,
+            median,
+            mad,
+            None,
+            None,
+            "CURRENT_OBSERVATION_UNAVAILABLE",
+            {},
+            ("robust_historical_deviation", "historical_percentile"),
+        )
+    if count < required_observations:
+        return ZeroDteScore(
+            None,
+            0,
+            "INSUFFICIENT",
+            count,
+            mean,
+            median,
+            mad,
+            None,
+            None,
+            "INSUFFICIENT_HISTORY",
+            {},
+            ("robust_historical_deviation", "historical_percentile"),
+        )
+    assert mean is not None and median is not None and mad is not None
+    # Deterministic weak empirical rank: ties count at or below current.
+    percentile = sum(value <= current_volume_share for value in history) / count
+    percentile_points = piecewise(
+        percentile, SCORE_ANCHORS["zero_dte_historical_percentile"]
+    )
+    if mad <= mad_epsilon:
+        return ZeroDteScore(
+            round(percentile_points, 3),
+            30,
+            "READY_PERCENTILE_FALLBACK",
+            count,
+            mean,
+            median,
+            mad,
+            percentile,
+            None,
+            "HISTORICAL_PERCENTILE_FALLBACK",
+            {"historical_percentile": round(percentile_points, 3)},
+            ("robust_historical_deviation",),
+        )
+    deviation = (current_volume_share - median) / (1.4826 * mad)
+    robust_points = piecewise(deviation, SCORE_ANCHORS["zero_dte_robust_deviation"])
+    return ZeroDteScore(
+        round(robust_points + percentile_points, 3),
+        100,
+        "READY",
+        count,
+        mean,
+        median,
+        mad,
+        percentile,
+        deviation,
+        "MEDIAN_MAD_AND_EMPIRICAL_PERCENTILE",
+        {
+            "robust_historical_deviation": round(robust_points, 3),
+            "historical_percentile": round(percentile_points, 3),
+        },
+        (),
+    )
+
+
+def comparable_nonzero_expiry_peers(
+    target: ComparableExpiry,
+    candidates: Sequence[ComparableExpiry],
+    *,
+    max_peers: int = 4,
+    min_peers: int = 2,
+) -> ComparablePeerSet:
+    if target.dte <= 0 or target.dte > 90:
+        return ComparablePeerSet(None, 0, (), "NOT_APPLICABLE", None)
+    if target.dte <= 7:
+        lower, upper, max_distance = 1, 7, 3
+    elif target.dte <= 30:
+        lower, upper, max_distance = 8, 30, 7
+    else:
+        lower, upper, max_distance = 31, 90, 14
+    eligible = [
+        row
+        for row in candidates
+        if row is not target
+        and lower <= row.dte <= upper
+        and row.dte != 0
+        and abs(row.dte - target.dte) <= max_distance
+        and row.volume >= 0
+    ]
+    eligible.sort(
+        key=lambda row: (
+            0
+            if target.expiration_type
+            and row.expiration_type
+            and row.expiration_type == target.expiration_type
+            else 1,
+            abs(row.dte - target.dte),
+            row.dte,
+        )
+    )
+    selected = eligible[:max_peers]
+    dtes = tuple(row.dte for row in selected)
+    if len(selected) < min_peers:
+        return ComparablePeerSet(None, len(selected), dtes, "INSUFFICIENT", None)
+    median_volume = float(statistics.median(row.volume for row in selected))
+    if median_volume <= 0:
+        return ComparablePeerSet(None, len(selected), dtes, "UNUSABLE_ZERO_MEDIAN", median_volume)
+    same_type = sum(
+        bool(
+            target.expiration_type
+            and row.expiration_type
+            and row.expiration_type == target.expiration_type
+        )
+        for row in selected
+    )
+    quality = "SAME_VERIFIED_TYPE" if same_type == len(selected) else "DISTANCE_COMPARABLE"
+    return ComparablePeerSet(
+        target.volume / median_volume, len(selected), dtes, quality, median_volume
+    )
+
+
+def discovery_with_confirmation(
+    same_day: float | None, persistent: float | None
+) -> DiscoveryResult:
+    available = [("SAME_DAY", same_day), ("PERSISTENT", persistent)]
+    present = [(name, float(value)) for name, value in available if value is not None]
+    if not present:
+        return DiscoveryResult(None, None, None, 0, "NONE", 0)
+    primary_name, primary = max(present, key=lambda item: (item[1], item[0] == "SAME_DAY"))
+    if len(present) == 1:
+        return DiscoveryResult(primary, primary, None, 0, primary_name, 1)
+    secondary = min(value for _name, value in present)
+    bonus = 10 if secondary >= 80 else 6 if secondary >= 65 else 3 if secondary >= 40 else 0
+    source = "BOTH" if bonus else primary_name
+    return DiscoveryResult(
+        min(100, primary + bonus), primary, secondary, float(bonus), source, 2 if bonus else 1
+    )
+
+
+def discovery_eligible(
+    same_day: float | None, persistent: float | None, structural_cold_start: bool
+) -> bool:
+    return bool(
+        (same_day is not None and same_day >= 40)
+        or (persistent is not None and persistent >= 65)
+        or structural_cold_start
     )
 
 

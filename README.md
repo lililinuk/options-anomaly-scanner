@@ -1,6 +1,6 @@
 # Options Anomaly Scanner
 
-Production-oriented research infrastructure for evidence-backed US equity-options positioning research. The current immutable financial specification is `signal_spec_v1.1_phase2a`; it separates same-day expiry activity from daily OI positioning history and does not infer investor direction or Tradeability.
+Production-oriented research infrastructure for evidence-backed US equity-options positioning research. The current immutable financial specification is `signal_spec_v1.2_phase2a`; it calibrates 0DTE against prior same-ticker activity sessions, separates same-day expiry activity from daily OI positioning history, and does not infer investor direction or Tradeability.
 
 ## Architecture
 

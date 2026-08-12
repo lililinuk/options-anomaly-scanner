@@ -1,6 +1,6 @@
-# Scan Orchestration — Phase 2A v1.1
+# Scan Orchestration — Phase 2A v1.2
 
-Specification: `signal_spec_v1.1_phase2a`
+Specification: `signal_spec_v1.2_phase2a`
 
 ## Workflow A — Daily OI Archive
 
@@ -33,20 +33,23 @@ The browser calls only Next.js `/api/mag7-scan` and never Nightwatch.
 1. S0 validates PostgreSQL, capability snapshots, budget, and New York market date.
 2. S2 requests `expiry-breakdown` and `options-volume` once per ticker; raw evidence and ticker-only
    context are persisted.
-3. S3 calculates Same-Day Activity independently from archive-backed expiry persistence, then uses
-   maximum—not average—for Dual Discovery.
-4. S4 selects at most four tickers and one strongest eligible expiry in each 0–90 DTE bucket.
-5. S5 reads the latest valid complete chain from PostgreSQL, calculates contract structure and
+3. S3 persists one idempotent DTE-0 activity snapshot per ticker/vendor activity date. DTE 0 uses
+   only the previous 20 valid sessions; nonzero DTE uses bounded comparable current-session peers.
+4. Discovery preserves the primary track and applies only a small meaningful-secondary confirmation
+   bonus. Eligibility is evaluated on the underlying tracks before ranking.
+5. S4 selects at most four tickers and one strongest eligible expiry in each 0–90 DTE bucket.
+6. S5 reads the latest valid complete chain from PostgreSQL, calculates contract structure and
    persistence, requests one ranked OI Change Radar payload per selected ticker, and builds same-side
    OI clusters.
-6. S6 persists bucket summaries and safe dashboard fields.
+7. S6 persists bucket summaries and safe dashboard fields, including the full score distribution,
+   ranked eligible expiries, and DTE-0 baseline status.
 
 The interactive budget remains 75 consumed units and 100 attempts. It never rebuilds the daily
 0–180 archive and never calls contract intraday. Thirty-minute raw reuse remains available for fresh
 same-day endpoints. Radar absence is neutral.
 
-Raw vendor responses are persisted before normalized/derived rows. Every v1.1 run snapshots its
-configuration and carries `signal_spec_v1.1_phase2a`; v1.0 records remain immutable evidence.
+Raw vendor responses are persisted before normalized/derived rows. Every v1.2 run snapshots its
+configuration and carries `signal_spec_v1.2_phase2a`; v1.0 and v1.1 records remain immutable evidence.
 
 ## Scheduling requirement
 

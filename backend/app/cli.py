@@ -13,7 +13,7 @@ from app.nightwatch.errors import NightwatchError
 from app.persistence.metadata import MetadataRepository
 from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
 from app.scanner.service import ConcurrentScanError
-from app.scanner.v11 import Mag7Scanner
+from app.scanner.v12 import Mag7Scanner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands.add_parser(
         "run-mag7-scan",
-        help="Run one budget-bounded manual Phase 2A v1.1 dual-discovery scan",
+        help="Run one budget-bounded manual Phase 2A v1.2 calibrated-discovery scan",
     )
     subcommands.add_parser(
         "archive-mag7-oi",

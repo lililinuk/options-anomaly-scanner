@@ -3,14 +3,15 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes.scans import _max_numeric, _radar_status
+from app.api.routes.scans import _distribution, _max_numeric, _radar_status
 from app.db.session import get_db_session
 from app.main import app
 from app.scanner.service import ConcurrentScanError
 
 
 def test_application_health_is_utc_and_does_not_contact_vendor() -> None:
-    response = TestClient(app).get("/api/v1/health")
+    with TestClient(app) as client:
+        response = client.get("/api/v1/health")
 
     assert response.status_code == 200
     payload = response.json()
@@ -43,7 +44,8 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
     session = FakeSession()
     app.dependency_overrides[get_db_session] = lambda: session
     try:
-        response = TestClient(app).get("/api/v1/system/status")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/system/status")
     finally:
         app.dependency_overrides.clear()
 
@@ -71,7 +73,8 @@ def test_system_status_reports_database_unavailable_without_vendor_call() -> Non
 
     app.dependency_overrides[get_db_session] = lambda: OfflineSession()
     try:
-        response = TestClient(app).get("/api/v1/system/status")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/system/status")
     finally:
         app.dependency_overrides.clear()
 
@@ -87,11 +90,30 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
 
     app.dependency_overrides[get_db_session] = lambda: EmptySession()
     try:
-        response = TestClient(app).get("/api/v1/scans/mag7/latest")
+        with TestClient(app) as client:
+            response = client.get("/api/v1/scans/mag7/latest")
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json() == {"scan": None, "results": []}
+    assert response.json() == {
+        "scan": None,
+        "results": [],
+        "distribution": {
+            "total_expiries": 0,
+            "scored_expiries": 0,
+            "normal_eligible_expiries": 0,
+            "discovery_90_plus": 0,
+            "discovery_80_89": 0,
+            "discovery_65_79": 0,
+            "discovery_40_64": 0,
+            "discovery_below_40": 0,
+            "unavailable": 0,
+            "cold_start": 0,
+        },
+        "top_expiries": [],
+        "zero_dte_status": [],
+        "structural_cold_start": [],
+    }
 
 
 def test_latest_scan_numeric_summary_ignores_unavailable_values() -> None:
@@ -105,6 +127,30 @@ def test_radar_status_distinguishes_absence_from_not_tested() -> None:
     assert _radar_status("MSFT", set(), set()) == "NOT_TESTED"
 
 
+def test_discovery_distribution_counts_unavailable_and_cold_start() -> None:
+    def row(score, *, same=None, persistent=None, status=None, cold=False):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            dte_at_detection=1,
+            discovery_score=score,
+            same_day_activity_score=same,
+            persistent_positioning_score=persistent,
+            same_day_baseline_status=status,
+            structural_cold_start_eligible=cold,
+        )
+
+    result = _distribution([
+        row(95, same=95), row(85, same=85), row(70, persistent=70),
+        row(50, same=50), row(20, same=20),
+        row(None, status="INSUFFICIENT"), row(None, cold=True),
+    ])
+    assert result == {
+        "total_expiries": 7, "scored_expiries": 5, "normal_eligible_expiries": 4,
+        "discovery_90_plus": 1, "discovery_80_89": 1, "discovery_65_79": 1,
+        "discovery_40_64": 1, "discovery_below_40": 1,
+        "unavailable": 2, "cold_start": 2,
+    }
+
+
 def test_concurrent_mag7_scan_is_rejected(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     async def conflict(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise ConcurrentScanError("already running")
@@ -112,7 +158,8 @@ def test_concurrent_mag7_scan_is_rejected(monkeypatch) -> None:  # type: ignore[
     monkeypatch.setattr("app.api.routes.scans.Mag7Scanner.execute", conflict)
     app.dependency_overrides[get_db_session] = lambda: object()
     try:
-        response = TestClient(app).post("/api/v1/scans/mag7")
+        with TestClient(app) as client:
+            response = client.post("/api/v1/scans/mag7")
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 409

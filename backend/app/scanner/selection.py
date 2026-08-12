@@ -5,6 +5,7 @@ from typing import Protocol, TypeVar
 
 from app.models.signals import DteBucket
 from app.scanner.config import LIMITS
+from app.scanner.scoring import discovery_eligible
 
 
 class ScoredExpiry(Protocol):
@@ -16,9 +17,9 @@ class ScoredExpiry(Protocol):
 class DualDiscoveryExpiry(Protocol):
     ticker: str
     bucket_at_detection: str
-    same_day_activity_score: object
+    same_day_activity_score: object | None
     persistent_positioning_score: object | None
-    discovery_score: object
+    discovery_score: object | None
     structural_cold_start_eligible: bool
 
 
@@ -62,19 +63,22 @@ def select_dual_discovery(rows: Iterable[U]) -> list[U]:
         row
         for row in rows
         if row.bucket_at_detection != DteBucket.LONG.value
-        and (
-            float(row.same_day_activity_score) >= LIMITS.same_day_eligibility_score
-            or (
-                row.persistent_positioning_score is not None
-                and float(row.persistent_positioning_score)
-                >= LIMITS.persistent_eligibility_score
-            )
-            or row.structural_cold_start_eligible
+        and discovery_eligible(
+            float(row.same_day_activity_score)
+            if row.same_day_activity_score is not None
+            else None,
+            float(row.persistent_positioning_score)
+            if row.persistent_positioning_score is not None
+            else None,
+            row.structural_cold_start_eligible,
         )
     ]
+    normally_ranked = [row for row in eligible if row.discovery_score is not None]
     strengths = {
-        ticker: max(float(row.discovery_score) for row in eligible if row.ticker == ticker)
-        for ticker in {row.ticker for row in eligible}
+        ticker: max(
+            float(row.discovery_score) for row in normally_ranked if row.ticker == ticker
+        )
+        for ticker in {row.ticker for row in normally_ranked}
     }
     tickers = [
         ticker
@@ -82,14 +86,36 @@ def select_dual_discovery(rows: Iterable[U]) -> list[U]:
             strengths.items(), key=lambda item: item[1], reverse=True
         )[: LIMITS.max_deep_tickers]
     ]
+    if len(tickers) < LIMITS.max_deep_tickers:
+        cold_only = sorted(
+            {
+                row.ticker
+                for row in eligible
+                if row.discovery_score is None and row.ticker not in tickers
+            }
+        )
+        tickers.extend(cold_only[: LIMITS.max_deep_tickers - len(tickers)])
     selected: list[U] = []
     for ticker in tickers:
         for bucket in (DteBucket.VERY_SHORT, DteBucket.SHORT, DteBucket.MEDIUM):
             choices = [
                 row
                 for row in eligible
-                if row.ticker == ticker and row.bucket_at_detection == bucket.value
+                if row.ticker == ticker
+                and row.bucket_at_detection == bucket.value
+                and row.discovery_score is not None
             ]
             if choices:
                 selected.append(max(choices, key=lambda row: float(row.discovery_score)))
+                continue
+            cold_choices = [
+                row
+                for row in eligible
+                if row.ticker == ticker
+                and row.bucket_at_detection == bucket.value
+                and row.discovery_score is None
+                and row.structural_cold_start_eligible
+            ]
+            if cold_choices:
+                selected.append(cold_choices[0])
     return selected

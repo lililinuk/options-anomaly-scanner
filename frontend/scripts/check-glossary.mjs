@@ -18,7 +18,17 @@ for (const required of [
   "same_day_activity_score", "persistent_positioning_score", "discovery_score",
   "oi_share", "oi_share_change", "contract_structure_score",
   "contract_persistent_score", "oi_change_radar_status", "archive_vendor_oi_date",
+  "discovery_evidence_breadth", "dte",
 ]) {
-  if (!columns.includes(required)) throw new Error(`Required v1.1 dashboard field missing: ${required}`);
+  if (!columns.includes(required)) throw new Error(`Required v1.2 dashboard field missing: ${required}`);
 }
-console.log("Dashboard null-safety and Phase 2A v1.1 visible-field coverage: passed");
+for (const required of [
+  "0DTE Baseline", "Rolling Mean", "Rolling Median + MAD", "Historical Percentile",
+  "Evidence Breadth", "Cold Start",
+]) {
+  if (!source.includes(required)) throw new Error(`Required v1.2 glossary concept missing: ${required}`);
+}
+for (const required of ["Cross-MAG7 Expiry Selectivity", "Top Expiry Discoveries", "Previous-20 Baseline Status"]) {
+  if (!dashboard.includes(required)) throw new Error(`Required v1.2 dashboard view missing: ${required}`);
+}
+console.log("Dashboard null-safety and Phase 2A v1.2 visible-field/distribution coverage: passed");

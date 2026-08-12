@@ -1,9 +1,9 @@
 # Signal Specification — Phase 2A
 
-Current immutable version: `signal_spec_v1.1_phase2a`
+Current immutable version: `signal_spec_v1.2_phase2a`
 
 Historical version `signal_spec_v1.0_phase2a` remains attached to its existing scan records and is
-never recalculated in place. Phase 2A v1.1 describes activity and OI positioning structure. It does
+never recalculated in place. Version `signal_spec_v1.1_phase2a` also remains immutable. Phase 2A v1.2 describes activity and OI positioning structure. It does
 not infer opening buyers, investor direction, BUY/SELL, GEX trading logic, lifecycle, Tradeability,
 or any Phase 2B signal.
 
@@ -22,6 +22,22 @@ Therefore v1.1:
 - removes Contract Volume/OI, premium, historical volume, and Intraday Burst scoring;
 - turns `oi-change` into supplemental OI Change Radar evidence only;
 - replaces volume/premium clusters with same-right OI-positioning clusters.
+
+## v1.1 → v1.2 calibration amendment
+
+The controlled v1.1 run demonstrated that a broad cross-expiry comparator made all seven ticker
+maxima DTE 0 and saturated every Neighbor component. Version 1.2 therefore:
+
+- stores one valid DTE-0 activity snapshot per ticker/vendor activity date;
+- sets DTE-0 Same-Day to null until 20 prior valid DTE-0 observations exist;
+- scores ready DTE-0 observations against their own prior-20 median/MAD and empirical percentile;
+- retains the raw cross-expiry neighbor ratio for DTE-0 diagnostics at scoring weight zero;
+- restricts nonzero-DTE peers by bucket, DTE distance, type preference, maximum four and minimum two;
+- replaces max-only Discovery with primary score plus a 0/3/6/10 confirmation bonus;
+- adds Discovery Evidence Breadth while leaving underlying eligibility thresholds unchanged;
+- makes ticker maxima and the full cross-MAG7 distribution independently visible.
+
+No v1.0 or v1.1 scan is rewritten.
 
 ## Universe, dates, and tenor
 
@@ -58,24 +74,44 @@ The overall score is the maximum available 3/5/10-window score, not an average. 
 
 ## Same-Day Activity Score
 
-`expiry-breakdown` supplies per-expiry total volume. Within 0–180 DTE:
+`expiry-breakdown` supplies per-expiry total volume. Its vendor activity date defines DTE and the
+valid activity observation session. For DTE > 0:
 
 - Expiry Volume Share max 60: 5/10/20/30/40/50% → 0/10/25/40/50/60;
 - comparable-expiry Volume Neighbor Ratio max 40: 1.2/1.5/2/3/5x → 0/8/15/25/40.
 
-Interpolation is piecewise-linear and capped. Comparable peers prefer the same inferred/vendor expiry
-type. An unavailable component stays missing; points are not rescaled to 100. Basis weight, coverage,
-and missing components are persisted.
+Comparable peers exclude DTE 0 and stay inside 1–7 (±3 DTE), 8–30 (±7), or 31–90 (±14). They
+prefer a matching verified type, take the nearest four at most, and require at least two. The peer
+count/DTEs/quality/median are persisted. The pool is never broadened to force a score. Missing
+Neighbor points are not rescaled.
+
+For DTE 0, the current session is never included in its own baseline. Exactly the previous 20 valid
+same-ticker DTE-0 activity sessions are required; gaps, weekends, and holidays do not count. Fewer
+than 20 gives `same_day_activity_score = null` and `INSUFFICIENT`. Once ready, persist mean, median,
+MAD, empirical percentile (`prior_value <= current` count / 20), observation count and method:
+
+- robust deviation `(current_share - median) / (1.4826 * MAD)`, max 70:
+  ≤1/1.5/2/3/≥4 → 0/15/30/50/70;
+- historical percentile, max 30: ≤70/80/90/95/100th → 0/10/20/25/30.
+
+If MAD is zero or ≤ configured epsilon, robust deviation stays unavailable and only the fixed-scale
+30-point percentile component is used. It is never rescaled. Raw current volume/share and the old
+cross-expiry neighbor remain diagnostic; the latter has DTE-0 scoring weight zero.
 
 Ticker-day `options-volume` Call/Put volume, OI, skew, and premiums remain ticker-only context and
 must not be attributed to an expiry.
 
-## Dual Discovery
+## Discovery confirmation
 
-`expiry_discovery_score = MAX(same_day_activity_score, persistent_positioning_score)`.
-Discovery source is SAME_DAY, PERSISTENT, or BOTH based on thresholds 40 and 65 respectively. A
+With one available track, Discovery equals that track. With two, primary is MAX and secondary is
+MIN. Secondary <40 adds 0; 40–64.999 adds 3; 65–79.999 adds 6; ≥80 adds 10. Discovery is capped at
+100 and is never an average. Source is BOTH only when secondary ≥40 contributes a bonus; otherwise
+it is the primary track. Neither available gives null/NONE. Evidence Breadth is 0, 1, or 2 for zero,
+one, or two meaningful tracks.
+
+Eligibility still requires Same-Day ≥40 or Persistent ≥65; a confirmation bonus cannot create it. A
 separate configurable `STRUCTURAL_COLD_START_ELIGIBLE` flag uses current OI Share ≥20% while history
-has fewer than three observations; it never changes the persistent score. At most four tickers are
+has fewer than three observations; it never creates a Discovery score. At most four tickers are
 selected, with at most one strongest eligible VERY_SHORT, SHORT, and MEDIUM expiry per ticker.
 
 ## Complete contract history
@@ -131,4 +167,4 @@ OI-weighted persistent score, and available window net OI change. It is not a fi
 ## Intraday
 
 Contract intraday is research-only because runtime validation returned only HTTP 202. It is not
-required, not aggressively polled, and has weight 0 in every v1.1 score.
+required, not aggressively polled, and has weight 0 in every v1.2 score.

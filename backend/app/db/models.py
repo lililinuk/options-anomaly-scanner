@@ -220,7 +220,7 @@ class ExpiryObservation(Base):
     expiration_type: Mapped[str] = mapped_column(String(40))
     expiration_type_source: Mapped[str] = mapped_column(String(16))
     baseline_quality: Mapped[str] = mapped_column(String(32))
-    preliminary_score: Mapped[Decimal] = mapped_column(Numeric(8, 3))
+    preliminary_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     preliminary_basis: Mapped[Decimal] = mapped_column(Numeric(8, 3))
     expiry_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     expiry_score_basis: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
@@ -245,6 +245,23 @@ class ExpiryObservation(Base):
     discovery_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     discovery_source: Mapped[str | None] = mapped_column(String(16))
     structural_cold_start_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    current_expiry_volume: Mapped[int | None] = mapped_column(BigInteger)
+    same_day_baseline_status: Mapped[str | None] = mapped_column(String(32))
+    baseline_observation_count: Mapped[int | None] = mapped_column(Integer)
+    baseline_20_mean_volume_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    baseline_20_median_volume_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    baseline_20_mad_volume_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    historical_percentile_20: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    robust_deviation: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    zero_dte_baseline_method: Mapped[str | None] = mapped_column(String(48))
+    comparable_peer_count: Mapped[int | None] = mapped_column(Integer)
+    comparable_peer_dtes: Mapped[list[int] | None] = mapped_column(JSONB)
+    comparable_peer_quality: Mapped[str | None] = mapped_column(String(32))
+    comparable_peer_median_volume: Mapped[Decimal | None] = mapped_column(Numeric(18, 3))
+    discovery_primary_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    discovery_secondary_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    discovery_confirmation_bonus: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    discovery_evidence_breadth: Mapped[int | None] = mapped_column(Integer)
 
 
 class ContractScanObservation(Base):
@@ -351,6 +368,29 @@ class DailyOiArchiveRun(Base):
     consumed_quota_units: Mapped[int] = mapped_column(Integer, default=0)
     network_attempts: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ZeroDteActivityDailySnapshot(Base):
+    __tablename__ = "zero_dte_activity_daily_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "observation_date", name="uq_zero_dte_activity_ticker_date"
+        ),
+        Index("ix_zero_dte_activity_history", "ticker", "observation_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scan_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scan_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    observation_date: Mapped[date] = mapped_column(Date)
+    expiration: Mapped[date] = mapped_column(Date)
+    expiry_volume: Mapped[int] = mapped_column(BigInteger)
+    ticker_scope_volume: Mapped[int] = mapped_column(BigInteger)
+    volume_share: Mapped[Decimal] = mapped_column(Numeric(12, 8))
+    raw_cross_expiry_neighbor_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
+    source_request_id: Mapped[str] = mapped_column(String(128))
+    specification_version: Mapped[str] = mapped_column(String(64))
 
 
 class DailyOiArchiveTicker(Base):

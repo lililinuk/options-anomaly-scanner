@@ -3,7 +3,7 @@ from typing import Final
 
 from app.models.signals import DEFAULT_DTE_BUCKET_RULES
 
-SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.1_phase2a"
+SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.2_phase2a"
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,10 @@ class ScannerLimits:
     same_day_eligibility_score: float = 40
     persistent_eligibility_score: float = 65
     structural_cold_start_oi_share: float = 0.20
+    zero_dte_baseline_observations: int = 20
+    zero_dte_mad_epsilon: float = 1e-9
+    comparable_peer_max_count: int = 4
+    comparable_peer_min_count: int = 2
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,12 @@ SCORE_ANCHORS: Final[dict[str, tuple[tuple[float, float], ...]]] = {
         (0.05, 0), (0.10, 10), (0.20, 25), (0.30, 40), (0.40, 50), (0.50, 60)
     ),
     "same_day_volume_neighbor": ((1.2, 0), (1.5, 8), (2.0, 15), (3.0, 25), (5.0, 40)),
+    "zero_dte_robust_deviation": (
+        (1.0, 0), (1.5, 15), (2.0, 30), (3.0, 50), (4.0, 70)
+    ),
+    "zero_dte_historical_percentile": (
+        (0.70, 0), (0.80, 10), (0.90, 20), (0.95, 25), (1.0, 30)
+    ),
     "expiry_persistent_share_change": (
         (0.005, 0), (0.01, 8), (0.02, 16), (0.05, 28), (0.10, 40)
     ),

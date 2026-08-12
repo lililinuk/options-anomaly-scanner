@@ -85,9 +85,9 @@ def test_structure_score_has_no_volume_premium_history_or_intraday_dependency() 
 class Expiry:
     ticker: str
     bucket_at_detection: str
-    same_day_activity_score: float
+    same_day_activity_score: float | None
     persistent_positioning_score: float | None
-    discovery_score: float
+    discovery_score: float | None
     structural_cold_start_eligible: bool = False
 
 
