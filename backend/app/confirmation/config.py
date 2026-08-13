@@ -8,7 +8,7 @@ from typing import Final
 
 from app.config import get_settings
 
-PHASE2B_SPEC_VERSION: Final = "signal_spec_v1.0_phase2b"
+PHASE2B_SPEC_VERSION: Final = "signal_spec_v1.1_phase2b"
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,11 @@ class Phase2bContextConfig:
     term_structure_freshness_minutes: int
     heatmap_freshness_minutes: int
     at_spot_tolerance_pct: Decimal
-    daily_session_policy: str = "REGULAR_SESSION_ONLY"
+    return_windows: tuple[int, ...] = (1, 5, 20)
+    sma_windows: tuple[int, ...] = (20, 50)
+    atr_window: int = 14
+    rolling_range_window: int = 20
+    daily_session_policy: str = "VALID_REGULAR_SESSION_OBSERVATIONS"
     price_adjustment_semantics: str = "UNCONFIRMED"
 
     def snapshot(self) -> dict[str, object]:
@@ -54,4 +58,8 @@ def active_phase2b_config() -> Phase2bContextConfig:
         term_structure_freshness_minutes=settings.phase2b_term_structure_freshness_minutes,
         heatmap_freshness_minutes=settings.phase2b_heatmap_freshness_minutes,
         at_spot_tolerance_pct=settings.phase2b_at_spot_tolerance_pct,
+        return_windows=settings.phase2b_return_windows,
+        sma_windows=settings.phase2b_sma_windows,
+        atr_window=settings.phase2b_atr_window,
+        rolling_range_window=settings.phase2b_rolling_range_window,
     )

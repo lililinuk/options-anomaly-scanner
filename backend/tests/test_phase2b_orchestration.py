@@ -96,6 +96,30 @@ async def test_fresh_context_avoids_network_and_is_shared(monkeypatch) -> None: 
     assert summary.ticker_snapshots_created == 0
 
 
+async def test_reprocesses_preserved_raw_without_vendor_call(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    session = FakeSession()
+    service = Phase2bContextService(session, NoNetworkClient(), config())  # type: ignore[arg-type]
+    previous = SimpleNamespace(id="v1-context")
+    amended = SimpleNamespace(id="v1.1-context")
+    monkeypatch.setattr(service, "_candidate_source", lambda symbol: candidate(symbol))
+    monkeypatch.setattr(service, "_fresh_context", lambda _ticker: None)
+    monkeypatch.setattr(service, "_latest_context", lambda _ticker: previous)
+    monkeypatch.setattr(service, "_reprocess_ticker_context", lambda source: amended)
+
+    async def forbidden(_ticker: str):  # type: ignore[no-untyped-def]
+        raise AssertionError("preserved raw reprocessing must not call Nightwatch")
+
+    monkeypatch.setattr(service, "_fetch_ticker_context", forbidden)
+    monkeypatch.setattr(
+        service, "_evaluation", lambda context, _source: SimpleNamespace(id=context.id)
+    )
+    summary = await service.refresh_contracts(["A"], reuse_latest_raw=True)
+    assert summary.ticker_snapshots_reprocessed == 1
+    assert summary.ticker_snapshots_reused == 0
+    assert summary.ticker_snapshots_created == 0
+    assert summary.evaluations == ("v1.1-context",)
+
+
 def test_request_set_has_no_chain_rv_skew_standard_or_zero_dte_endpoint() -> None:
     paths = {path for _name, path, _params in Phase2bContextService.ENDPOINTS}
     assert len(paths) == 5

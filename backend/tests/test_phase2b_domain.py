@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -17,9 +17,10 @@ def bars(count: int, *, descending: bool = False) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for index in range(count):
         close = float(200 - index if descending else 100 + index)
+        trading_date = date(2026, 1, 2) + timedelta(days=index)
         result.append(
             {
-                "trading_date": f"2026-06-{index + 1:02d}",
+                "trading_date": trading_date.isoformat(),
                 "session": "regular",
                 "open_usd": close - 0.5,
                 "high_usd": close + 1,
@@ -36,30 +37,43 @@ def test_regular_session_grouping_ignores_other_sessions() -> None:
         {"trading_date": "2026-08-12", "session": "regular", "close_usd": 100},
         {"trading_date": "2026-08-12", "session": "postmarket", "close_usd": 101},
     ]
-    selected, policy = canonical_regular_daily(rows)
-    assert policy == "REGULAR_SESSION_ONLY"
-    assert [row["close_usd"] for row in selected] == [100]
+    series = canonical_regular_daily(rows)
+    assert series.policy == "VALID_REGULAR_SESSION_OBSERVATIONS"
+    assert [row["close_usd"] for row in series.observations] == [100]
+    assert series.raw_bar_count == 3
+    assert series.distinct_trading_date_count == 1
+    assert series.missing_regular_dates == ()
+    assert series.ambiguous_regular_dates == ()
 
 
-@pytest.mark.parametrize(
-    "rows",
-    [
-        [
-            {"trading_date": "2026-08-12", "session": "regular"},
-            {"trading_date": "2026-08-12", "session": "regular"},
-        ],
-        [{"trading_date": "2026-08-12", "session": "postmarket"}],
-    ],
-)
-def test_duplicate_or_missing_regular_session_is_unresolved(rows) -> None:  # type: ignore[no-untyped-def]
-    selected, policy = canonical_regular_daily(rows)
-    assert selected == []
-    assert policy == "DAILY_SESSION_POLICY_UNRESOLVED"
+def test_missing_and_duplicate_dates_do_not_invalidate_surrounding_rows() -> None:
+    rows = [
+        {"trading_date": "2026-08-10", "session": "regular", "close_usd": 100},
+        {"trading_date": "2026-08-11", "session": "postmarket", "close_usd": 101},
+        {"trading_date": "2026-08-12", "session": "premarket", "close_usd": 102},
+        {"trading_date": "2026-08-13", "session": "regular", "close_usd": 103},
+        {"trading_date": "2026-08-13", "session": "regular", "close_usd": 104},
+        {"trading_date": "2026-08-14", "session": "regular", "close_usd": 105},
+    ]
+    series = canonical_regular_daily(list(reversed(rows)))
+    assert [row["trading_date"] for row in series.observations] == [
+        "2026-08-10",
+        "2026-08-14",
+    ]
+    assert series.missing_regular_dates == ("2026-08-11", "2026-08-12")
+    assert series.ambiguous_regular_dates == ("2026-08-13",)
 
 
 def test_price_features_are_deterministic_and_preserve_adjustment_caveat() -> None:
-    result = calculate_price_context({"data": {"as_of": "2026-08-12T04:00:00Z", "bars": bars(60)}})
-    assert result["availability"] == "AVAILABLE"
+    rows = bars(60)
+    rows.insert(31, {"trading_date": "2025-12-31", "session": "postmarket"})
+    result = calculate_price_context(
+        {"data": {"as_of": "2026-08-12T04:00:00Z", "bars": rows}}
+    )
+    assert result["availability"] == "AVAILABLE_WITH_GAPS"
+    assert result["coverage_quality"] == "VALID_WITH_GAPS"
+    assert result["valid_regular_session_count"] == 60
+    assert result["missing_regular_date_count"] == 1
     assert result["return_1d"] == pytest.approx(159 / 158 - 1)
     assert result["return_5d"] == pytest.approx(159 / 154 - 1)
     assert result["return_20d"] == pytest.approx(159 / 139 - 1)
@@ -73,15 +87,42 @@ def test_price_features_are_deterministic_and_preserve_adjustment_caveat() -> No
     assert result["price_adjustment_semantics"] == "UNCONFIRMED"
 
 
-def test_insufficient_histories_keep_missing_values_null() -> None:
-    nineteen = calculate_price_context({"data": {"bars": bars(19)}})
-    forty_nine = calculate_price_context({"data": {"bars": bars(49)}})
-    assert nineteen["sma_20"] is None
-    assert nineteen["return_20d"] is None
-    assert forty_nine["sma_20"] is not None
-    assert forty_nine["sma_50"] is None
-    assert forty_nine["trend"] == "UNKNOWN"
-    assert forty_nine["availability"] == "INSUFFICIENT_HISTORY"
+@pytest.mark.parametrize(
+    ("count", "present", "missing"),
+    [
+        (1, (), ("return_1d", "sma_20", "atr_14")),
+        (5, ("return_1d",), ("return_5d", "sma_20", "atr_14")),
+        (14, ("return_5d",), ("atr_14", "sma_20")),
+        (15, ("atr_14",), ("sma_20",)),
+        (20, ("sma_20", "rolling_high_20"), ("return_20d", "sma_50")),
+        (21, ("return_20d",), ("sma_50",)),
+        (49, ("sma_20", "atr_14"), ("sma_50",)),
+        (50, ("sma_50", "return_20d", "atr_14"), ()),
+    ],
+)
+def test_partial_histories_have_per_feature_nulls(
+    count: int, present: tuple[str, ...], missing: tuple[str, ...]
+) -> None:
+    result = calculate_price_context({"data": {"bars": bars(count)}})
+    for name in present:
+        assert result[name] is not None
+    for name in missing:
+        assert result[name] is None
+    if count < 50:
+        assert result["trend"] == "UNKNOWN"
+
+
+def test_valid_observation_indexing_skips_calendar_gap_without_off_by_one() -> None:
+    rows = bars(21)
+    rows.insert(10, {"trading_date": "2026-01-01", "session": "postmarket"})
+    result = calculate_price_context({"data": {"bars": list(reversed(rows))}})
+    assert result["return_1d"] == pytest.approx(120 / 119 - 1)
+    assert result["return_5d"] == pytest.approx(120 / 115 - 1)
+    assert result["return_20d"] == pytest.approx(120 / 100 - 1)
+    assert result["sma_20"] == pytest.approx(sum(range(101, 121)) / 20)
+    assert result["rolling_high_20"] == 121
+    assert result["rolling_low_20"] == 100
+    assert result["atr_14"] == 2
 
 
 def test_price_trend_states() -> None:
@@ -113,6 +154,18 @@ def test_stock_state_and_strike_distance_do_not_replace_missing_with_zero() -> N
         strike=220, current_price=None, atr14=None, tolerance_pct=Decimal("0.0025")
     )
     assert unavailable["strike_distance_pct"] is None
+
+
+def test_strike_location_states_tolerance_and_missing_atr() -> None:
+    below = strike_location(
+        strike=190, current_price=200, atr14=None, tolerance_pct=Decimal("0.0025")
+    )
+    at_spot = strike_location(
+        strike=200.4, current_price=200, atr14=5, tolerance_pct=Decimal("0.0025")
+    )
+    assert below["state"] == "BELOW_SPOT"
+    assert below["strike_distance_atr"] is None
+    assert at_spot["state"] == "AT_SPOT_APPROX"
 
 
 def test_term_structure_exact_and_neighbours_keep_contract_iv_separate() -> None:

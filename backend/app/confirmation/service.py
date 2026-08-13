@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -29,6 +30,7 @@ from app.db.models import (
     OiChangeRadarObservation,
     Phase2bCandidateEvaluation,
     Phase2bTickerContextSnapshot,
+    RawVendorPayload,
     StrikeCluster,
 )
 from app.ingestion.raw import RawIngestor
@@ -51,6 +53,7 @@ class Phase2bRunSummary:
     evaluations: tuple[str, ...]
     ticker_snapshots_created: int
     ticker_snapshots_reused: int
+    ticker_snapshots_reprocessed: int = 0
 
 
 class Phase2bContextService:
@@ -73,7 +76,8 @@ class Phase2bContextService:
         self.config = config or active_phase2b_config()
 
     async def refresh_contracts(
-        self, contract_symbols: Sequence[str], *, force: bool = False
+        self, contract_symbols: Sequence[str], *, force: bool = False,
+        reuse_latest_raw: bool = False,
     ) -> Phase2bRunSummary:
         candidates = [
             candidate
@@ -81,24 +85,30 @@ class Phase2bContextService:
             if (candidate := self._candidate_source(symbol)) is not None
         ]
         if not candidates:
-            return Phase2bRunSummary((), 0, 0)
+            return Phase2bRunSummary((), 0, 0, 0)
         grouped: dict[str, list[CandidateSource]] = {}
         for candidate in candidates:
             grouped.setdefault(candidate.ticker, []).append(candidate)
         evaluations: list[str] = []
-        created = reused = 0
+        created = reused = reprocessed = 0
         for ticker, ticker_candidates in grouped.items():
             context = None if force else self._fresh_context(ticker)
+            was_reprocessed = False
+            if context is None and reuse_latest_raw:
+                previous = self._latest_context(ticker)
+                context = self._reprocess_ticker_context(previous) if previous else None
+                was_reprocessed = context is not None
+                reprocessed += int(was_reprocessed)
             if context is None:
                 context = await self._fetch_ticker_context(ticker)
                 created += 1
-            else:
+            elif not was_reprocessed:
                 reused += 1
             for candidate in ticker_candidates:
                 evaluation = self._evaluation(context, candidate)
                 evaluations.append(str(evaluation.id))
         self.session.commit()
-        return Phase2bRunSummary(tuple(evaluations), created, reused)
+        return Phase2bRunSummary(tuple(evaluations), created, reused, reprocessed)
 
     def _candidate_source(self, symbol: str) -> CandidateSource | None:
         radar = self.session.scalar(
@@ -137,6 +147,69 @@ class Phase2bContextService:
             .limit(1)
         )
 
+    def _latest_context(self, ticker: str) -> Phase2bTickerContextSnapshot | None:
+        return self.session.scalar(
+            select(Phase2bTickerContextSnapshot)
+            .where(Phase2bTickerContextSnapshot.ticker == ticker)
+            .order_by(desc(Phase2bTickerContextSnapshot.created_at))
+            .limit(1)
+        )
+
+    def _reprocess_ticker_context(
+        self, source: Phase2bTickerContextSnapshot
+    ) -> Phase2bTickerContextSnapshot | None:
+        """Append v1.1 normalization from preserved raw OHLC without a vendor request."""
+
+        ohlc_payload: dict[str, Any] | None = None
+        for raw_id in source.raw_payload_ids:
+            try:
+                raw_uuid = uuid.UUID(str(raw_id))
+            except (TypeError, ValueError):
+                continue
+            raw = self.session.get(RawVendorPayload, raw_uuid)
+            if raw and raw.endpoint.endswith(f"/stocks/ohlc/{source.ticker}"):
+                if isinstance(raw.payload, dict):
+                    ohlc_payload = raw.payload
+                    break
+        if ohlc_payload is None:
+            return None
+        price = self._price_context(ohlc_payload)
+        row = Phase2bTickerContextSnapshot(
+            ticker=source.ticker,
+            created_at=utc_now(),
+            specification_version=PHASE2B_SPEC_VERSION,
+            config_version=self.config.version,
+            config_hash=self.config.configuration_hash,
+            effective_config=self.config.snapshot(),
+            stock_state=source.stock_state,
+            price_context=price,
+            iv_rank=source.iv_rank,
+            term_structure=source.term_structure,
+            dealer_heatmap=source.dealer_heatmap,
+            source_timestamps=source.source_timestamps,
+            raw_payload_ids=source.raw_payload_ids,
+            source_request_ids=source.source_request_ids,
+            endpoint_statuses={
+                **source.endpoint_statuses,
+                "daily_ohlc_reprocessing": {
+                    "availability": "AVAILABLE",
+                    "source": "PRESERVED_RAW_PAYLOAD",
+                },
+            },
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def _price_context(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return calculate_price_context(
+            payload,
+            return_windows=self.config.return_windows,
+            sma_windows=self.config.sma_windows,
+            atr_window=self.config.atr_window,
+            rolling_range_window=self.config.rolling_range_window,
+        )
+
     async def _fetch_ticker_context(self, ticker: str) -> Phase2bTickerContextSnapshot:
         payloads: dict[str, dict[str, Any]] = {}
         raw_ids: list[str] = []
@@ -172,7 +245,7 @@ class Phase2bContextService:
                     "error_code": error.code,
                 }
         stock = normalize_stock_state(payloads.get("stock_state", {}))
-        price = calculate_price_context(payloads.get("daily_ohlc", {}))
+        price = self._price_context(payloads.get("daily_ohlc", {}))
         iv_data = payloads.get("iv_rank", {}).get("data", {})
         iv_rank = {
             "availability": "AVAILABLE" if iv_data else "UNAVAILABLE",

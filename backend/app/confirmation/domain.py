@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -17,61 +18,138 @@ def _number(value: Any) -> float | None:
         return None
 
 
-def canonical_regular_daily(bars: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
-    """Return one regular-session row per date, or preserve uncertainty explicitly."""
+@dataclass(frozen=True)
+class CanonicalDailySeries:
+    observations: tuple[dict[str, Any], ...]
+    raw_bar_count: int
+    distinct_trading_date_count: int
+    missing_regular_dates: tuple[str, ...]
+    ambiguous_regular_dates: tuple[str, ...]
+    policy: str = "VALID_REGULAR_SESSION_OBSERVATIONS"
+
+    @property
+    def valid_observation_count(self) -> int:
+        return len(self.observations)
+
+
+def canonical_regular_daily(bars: list[dict[str, Any]]) -> CanonicalDailySeries:
+    """Keep every unambiguous regular row and flag only the unusable dates."""
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for bar in bars:
         trading_date = bar.get("trading_date")
         if isinstance(trading_date, str):
             grouped[trading_date].append(bar)
-    if not grouped:
-        return [], "DAILY_SESSION_POLICY_UNRESOLVED"
     selected: list[dict[str, Any]] = []
-    for _trading_date, rows in grouped.items():
+    missing: list[str] = []
+    ambiguous: list[str] = []
+    for trading_date, rows in grouped.items():
         regular = [row for row in rows if str(row.get("session", "")).lower() == "regular"]
-        if len(regular) != 1:
-            return [], "DAILY_SESSION_POLICY_UNRESOLVED"
-        selected.append(regular[0])
+        if len(regular) == 1:
+            selected.append(regular[0])
+        elif not regular:
+            missing.append(trading_date)
+        else:
+            ambiguous.append(trading_date)
     selected.sort(key=lambda row: str(row["trading_date"]))
-    return selected, "REGULAR_SESSION_ONLY"
+    return CanonicalDailySeries(
+        observations=tuple(selected),
+        raw_bar_count=len(bars),
+        distinct_trading_date_count=len(grouped),
+        missing_regular_dates=tuple(sorted(missing)),
+        ambiguous_regular_dates=tuple(sorted(ambiguous)),
+    )
 
 
-def _return(closes: list[float], periods: int) -> float | None:
-    if len(closes) <= periods or closes[-periods - 1] == 0:
+def _return(closes: list[float | None], periods: int) -> float | None:
+    if (
+        len(closes) <= periods
+        or closes[-1] is None
+        or closes[-periods - 1] in {None, 0}
+    ):
         return None
-    return closes[-1] / closes[-periods - 1] - 1
+    return float(closes[-1]) / float(closes[-periods - 1]) - 1
 
 
-def _mean(values: list[float], length: int) -> float | None:
-    return sum(values[-length:]) / length if len(values) >= length else None
+def _mean(values: list[float | None], length: int) -> float | None:
+    window = values[-length:]
+    return sum(value for value in window if value is not None) / length if (
+        len(window) == length and all(value is not None for value in window)
+    ) else None
 
 
 def _atr(rows: list[dict[str, Any]], length: int = 14) -> float | None:
     if len(rows) < length + 1:
         return None
+    window = rows[-(length + 1) :]
     true_ranges: list[float] = []
-    for index in range(1, len(rows)):
-        high = _number(rows[index].get("high_usd"))
-        low = _number(rows[index].get("low_usd"))
-        previous_close = _number(rows[index - 1].get("close_usd"))
+    for index in range(1, len(window)):
+        high = _number(window[index].get("high_usd"))
+        low = _number(window[index].get("low_usd"))
+        previous_close = _number(window[index - 1].get("close_usd"))
         if high is None or low is None or previous_close is None:
             return None
         true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
     return sum(true_ranges[-length:]) / length
 
 
-def calculate_price_context(payload: dict[str, Any]) -> dict[str, Any]:
+def calculate_price_context(
+    payload: dict[str, Any],
+    *,
+    return_windows: tuple[int, ...] = (1, 5, 20),
+    sma_windows: tuple[int, ...] = (20, 50),
+    atr_window: int = 14,
+    rolling_range_window: int = 20,
+) -> dict[str, Any]:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     bars = data.get("bars") if isinstance(data, dict) else None
     bars = bars if isinstance(bars, list) else []
-    canonical, policy = canonical_regular_daily([row for row in bars if isinstance(row, dict)])
+    canonical = canonical_regular_daily([row for row in bars if isinstance(row, dict)])
+    observations = list(canonical.observations)
+    has_gaps = bool(canonical.missing_regular_dates or canonical.ambiguous_regular_dates)
+    required_history = max(
+        [window + 1 for window in return_windows]
+        + list(sma_windows)
+        + [atr_window + 1, rolling_range_window]
+    )
+    coverage_quality = (
+        "UNAVAILABLE"
+        if not observations
+        else "INSUFFICIENT_HISTORY"
+        if len(observations) < required_history
+        else "VALID_WITH_GAPS"
+        if has_gaps
+        else "COMPLETE_FOR_WINDOW"
+    )
     base: dict[str, Any] = {
-        "availability": "UNAVAILABLE" if not bars else "PARTIAL",
-        "daily_session_policy": policy,
+        "availability": "UNAVAILABLE" if not observations else "PARTIAL",
+        "daily_session_policy": canonical.policy,
         "price_adjustment_semantics": "UNCONFIRMED",
         "vendor_as_of": data.get("as_of") if isinstance(data, dict) else None,
-        "canonical_observation_count": len(canonical),
+        "raw_bar_count": canonical.raw_bar_count,
+        "distinct_trading_date_count": canonical.distinct_trading_date_count,
+        "canonical_observation_count": canonical.valid_observation_count,
+        "valid_regular_session_count": canonical.valid_observation_count,
+        "missing_regular_date_count": len(canonical.missing_regular_dates),
+        "ambiguous_regular_date_count": len(canonical.ambiguous_regular_dates),
+        "missing_regular_dates": list(canonical.missing_regular_dates),
+        "ambiguous_regular_dates": list(canonical.ambiguous_regular_dates),
+        "oldest_valid_regular_date": (
+            observations[0].get("trading_date") if observations else None
+        ),
+        "latest_valid_regular_date": (
+            observations[-1].get("trading_date") if observations else None
+        ),
+        "coverage_quality": coverage_quality,
+        "calculation_basis": {
+            "observation_unit": "VALID_REGULAR_SESSION_OBSERVATION",
+            "return_windows": list(return_windows),
+            "return_indexing": "latest_close / close_N_valid_observations_back - 1",
+            "sma_windows": list(sma_windows),
+            "atr_window": atr_window,
+            "atr_method": "ARITHMETIC_MEAN_TRUE_RANGE",
+            "rolling_range_window": rolling_range_window,
+        },
         "return_1d": None,
         "return_5d": None,
         "return_20d": None,
@@ -84,39 +162,64 @@ def calculate_price_context(payload: dict[str, Any]) -> dict[str, Any]:
         "atr_14": None,
         "trend": "UNKNOWN",
     }
-    if not canonical:
+    if not observations:
         return base
-    closes = [_number(row.get("close_usd")) for row in canonical]
-    highs = [_number(row.get("high_usd")) for row in canonical]
-    lows = [_number(row.get("low_usd")) for row in canonical]
-    if any(value is None for value in closes):
-        return base
-    numeric_closes = [float(value) for value in closes if value is not None]
-    latest = numeric_closes[-1]
-    sma20 = _mean(numeric_closes, 20)
-    sma50 = _mean(numeric_closes, 50)
+    closes = [_number(row.get("close_usd")) for row in observations]
+    highs = [_number(row.get("high_usd")) for row in observations]
+    lows = [_number(row.get("low_usd")) for row in observations]
+    latest = closes[-1]
+    returns = {window: _return(closes, window) for window in return_windows}
+    smas = {window: _mean(closes, window) for window in sma_windows}
+    sma20 = smas.get(20)
+    sma50 = smas.get(50)
+    rolling_high = (
+        max(float(value) for value in highs[-rolling_range_window:] if value is not None)
+        if len(highs) >= rolling_range_window
+        and all(value is not None for value in highs[-rolling_range_window:])
+        else None
+    )
+    rolling_low = (
+        min(float(value) for value in lows[-rolling_range_window:] if value is not None)
+        if len(lows) >= rolling_range_window
+        and all(value is not None for value in lows[-rolling_range_window:])
+        else None
+    )
+    atr = _atr(observations, atr_window)
+    feature_values = [*returns.values(), *smas.values(), rolling_high, rolling_low, atr]
+    available_count = sum(value is not None for value in feature_values)
+    availability = (
+        "UNAVAILABLE"
+        if latest is None
+        else "AVAILABLE_WITH_GAPS"
+        if available_count == len(feature_values) and has_gaps
+        else "AVAILABLE"
+        if available_count == len(feature_values)
+        else "PARTIAL"
+        if available_count
+        else "INSUFFICIENT_HISTORY"
+    )
     base.update(
         {
-            "availability": "AVAILABLE" if len(canonical) >= 50 else "INSUFFICIENT_HISTORY",
-            "latest_trading_date": canonical[-1].get("trading_date"),
+            "availability": availability,
+            "latest_trading_date": observations[-1].get("trading_date"),
             "latest_regular_close_usd": latest,
-            "return_1d": _return(numeric_closes, 1),
-            "return_5d": _return(numeric_closes, 5),
-            "return_20d": _return(numeric_closes, 20),
+            "return_1d": returns.get(1),
+            "return_5d": returns.get(5),
+            "return_20d": returns.get(20),
             "sma_20": sma20,
             "sma_50": sma50,
-            "distance_to_sma20_pct": latest / sma20 - 1 if sma20 else None,
-            "distance_to_sma50_pct": latest / sma50 - 1 if sma50 else None,
-            "rolling_high_20": max(float(v) for v in highs[-20:] if v is not None)
-            if len(highs) >= 20 and all(v is not None for v in highs[-20:])
-            else None,
-            "rolling_low_20": min(float(v) for v in lows[-20:] if v is not None)
-            if len(lows) >= 20 and all(v is not None for v in lows[-20:])
-            else None,
-            "atr_14": _atr(canonical),
+            "distance_to_sma20_pct": (
+                latest / sma20 - 1 if latest is not None and sma20 else None
+            ),
+            "distance_to_sma50_pct": (
+                latest / sma50 - 1 if latest is not None and sma50 else None
+            ),
+            "rolling_high_20": rolling_high if rolling_range_window == 20 else None,
+            "rolling_low_20": rolling_low if rolling_range_window == 20 else None,
+            "atr_14": atr if atr_window == 14 else None,
         }
     )
-    if sma20 is not None and sma50 is not None:
+    if latest is not None and sma20 is not None and sma50 is not None:
         if latest > sma20 > sma50:
             base["trend"] = "UPTREND"
         elif latest < sma20 < sma50:

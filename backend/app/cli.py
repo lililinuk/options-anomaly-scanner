@@ -48,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phase2b.add_argument("--contract", action="append", required=True)
     phase2b.add_argument("--force", action="store_true")
+    phase2b.add_argument(
+        "--reuse-latest-raw",
+        action="store_true",
+        help="Append current-spec normalization from preserved raw ticker context when available",
+    )
     return parser
 
 
@@ -220,7 +225,9 @@ async def run_backfill_mag7_radar() -> int:
     return 0
 
 
-async def run_phase2b_context(contracts: list[str], *, force: bool) -> int:
+async def run_phase2b_context(
+    contracts: list[str], *, force: bool, reuse_latest_raw: bool
+) -> int:
     settings = get_settings()
     collector = ApiUsageCollector()
     try:
@@ -235,7 +242,7 @@ async def run_phase2b_context(contracts: list[str], *, force: bool) -> int:
                 usage_observer=collector,
             ) as client:
                 summary = await Phase2bContextService(session, client).refresh_contracts(
-                    contracts, force=force
+                    contracts, force=force, reuse_latest_raw=reuse_latest_raw
                 )
             for event in collector.events:
                 persist_api_usage(session, event)
@@ -253,6 +260,7 @@ async def run_phase2b_context(contracts: list[str], *, force: bool) -> int:
         f"Phase 2B context: evaluations={len(summary.evaluations)} "
         f"ticker_snapshots_created={summary.ticker_snapshots_created} "
         f"ticker_snapshots_reused={summary.ticker_snapshots_reused} "
+        f"ticker_snapshots_reprocessed={summary.ticker_snapshots_reprocessed} "
         f"paid_units={consumed} network_attempts={attempts} quota_remaining={remaining}"
     )
     return 0
@@ -271,7 +279,13 @@ def main() -> int:
     if args.command == "backfill-mag7-radar":
         return asyncio.run(run_backfill_mag7_radar())
     if args.command == "refresh-phase2b-context":
-        return asyncio.run(run_phase2b_context(args.contract, force=args.force))
+        return asyncio.run(
+            run_phase2b_context(
+                args.contract,
+                force=args.force,
+                reuse_latest_raw=args.reuse_latest_raw,
+            )
+        )
     return 1
 
 
