@@ -12,8 +12,9 @@ from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
 from app.persistence.metadata import MetadataRepository
 from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
+from app.scanner.daily import DailyCollectionConcurrentError, DailyDataPipeline, DailyRadarBackfill
 from app.scanner.service import ConcurrentScanError
-from app.scanner.v12 import Mag7Scanner
+from app.scanner.v13 import Mag7Scanner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +31,14 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser(
         "archive-mag7-oi",
         help="Idempotently archive complete 0-180 DTE MAG7 daily OI snapshots",
+    )
+    subcommands.add_parser(
+        "archive-mag7-daily",
+        help="Run independent daily OI, expiry-activity, and OI-change Radar subjobs",
+    )
+    subcommands.add_parser(
+        "backfill-mag7-radar",
+        help="Evaluate stored Radar and fetch only missing latest-date MAG7 ticker coverage",
     )
     return parser
 
@@ -141,6 +150,68 @@ async def run_archive_mag7_oi() -> int:
     return 0
 
 
+async def run_archive_mag7_daily() -> int:
+    settings = get_settings()
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=min(settings.nightwatch_max_concurrency, 4),
+            ) as client:
+                summary = await DailyDataPipeline(session, client).execute(trigger="cli")
+    except DailyCollectionConcurrentError as error:
+        print(f"Daily MAG7 collection not started: {error}", file=sys.stderr)
+        return 4
+    except (SQLAlchemyError, NightwatchError, RuntimeError) as error:
+        print(f"Daily MAG7 collection failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    subjobs = ",".join(
+        f"{name}:{details['status']}" for name, details in sorted(summary.subjobs.items())
+    )
+    print(
+        f"Daily MAG7 collection: daily_run_id={summary.daily_run_id} "
+        f"status={summary.status} subjobs={subjobs} "
+        f"consumed_units={summary.consumed_quota_units} "
+        f"network_attempts={summary.network_attempts} "
+        f"elapsed_seconds={summary.elapsed_seconds}"
+    )
+    return 0
+
+
+async def run_backfill_mag7_radar() -> int:
+    settings = get_settings()
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=min(settings.nightwatch_max_concurrency, 4),
+            ) as client:
+                summary = await DailyRadarBackfill(session, client).execute(trigger="cli")
+    except DailyCollectionConcurrentError as error:
+        print(f"Radar backfill not started: {error}", file=sys.stderr)
+        return 4
+    except (SQLAlchemyError, NightwatchError, RuntimeError) as error:
+        print(f"Radar backfill failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    radar = summary.subjobs["radar"]
+    print(
+        f"Radar backfill: daily_run_id={summary.daily_run_id} status={summary.status} "
+        f"tickers_attempted={radar['tickers_attempted']} "
+        f"tickers_skipped={radar['tickers_skipped']} rows_persisted={radar['rows_persisted']} "
+        f"consumed_units={summary.consumed_quota_units} "
+        f"network_attempts={summary.network_attempts}"
+    )
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
@@ -149,6 +220,10 @@ def main() -> int:
         return asyncio.run(run_mag7_scan())
     if args.command == "archive-mag7-oi":
         return asyncio.run(run_archive_mag7_oi())
+    if args.command == "archive-mag7-daily":
+        return asyncio.run(run_archive_mag7_daily())
+    if args.command == "backfill-mag7-radar":
+        return asyncio.run(run_backfill_mag7_radar())
     return 1
 
 

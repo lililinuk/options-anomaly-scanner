@@ -15,6 +15,17 @@ date. DTE 0 reads only its previous 20 snapshots; nonzero DTE uses bounded same-
 Discovery confirmation is derived after these independent evidence tracks, while eligibility remains
 based on their original uncombined thresholds.
 
+Phase 2A v1.3 adds three independent discovery routes: `RADAR_EVENT`,
+`PERSISTENT_POSITIONING`, and `EXPIRY_ACTIVITY`. Route priority controls presentation and finite
+chain-analysis resources only; no cross-route score or average exists. The externally scheduled
+`python -m app.cli archive-mag7-daily` runs OI Archive, Activity Snapshot, and OI Change Radar as
+independent subjobs. Interactive scans reuse the latest persisted Radar evidence.
+
+Radar materiality uses a runtime-injected profile. The evaluator contains no Premium or OI numeric
+threshold. Each daily run and Radar event stores the profile ID, immutable version, effective values,
+and configuration hash. Future profile variants fit the JSON snapshot without a schema redesign;
+changing an active profile never recalculates historical rows.
+
 ## Purpose and boundary
 
 Options Anomaly Scanner is a research and decision-support system. Phase 1 builds a traceable ingestion and presentation foundation; it does not identify directional trades or implement unusual-options formulas.

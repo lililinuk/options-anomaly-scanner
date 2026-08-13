@@ -118,6 +118,13 @@ h1 { max-width: 720px; margin: 0; color: #122632; font-family: Georgia, "Times N
 .results-table th { padding: 12px 13px; white-space: nowrap; }
 .results-table td { padding: 14px 13px; color: #354851; border-bottom: 1px solid #edf0f1; font-size: 11px; white-space: nowrap; }
 .results-table td:first-child { color: var(--ink); font-weight: 800; }
+.radar-filters { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: rgba(27, 65, 75, .025); }
+.radar-filters label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; letter-spacing: .04em; }
+.radar-filters input, .radar-filters select { min-width: 0; border: 1px solid var(--line); border-radius: 5px; padding: 8px; color: var(--ink); background: #fff; font: inherit; }
+.secondary-button { align-self: end; min-height: 34px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: #f5f7f7; cursor: pointer; }
+.context-badge, .route-badge { display: inline-block; margin: 2px 4px 2px 0; border: 1px solid rgba(27, 119, 104, .35); border-radius: 999px; padding: 3px 7px; color: #166b5e; background: rgba(27, 119, 104, .07); font-size: 9px; white-space: nowrap; }
+.event-detail { min-width: 330px; padding: 10px 0; color: var(--muted); font-size: 10px; line-height: 1.65; }
+details summary { cursor: pointer; color: var(--ink); }
 
 .guide-header { margin-bottom: 22px; }
 .caveat-card { max-width: 1440px; margin: 0 auto 18px; padding: 20px 23px; border: 1px solid #eadbbd; border-radius: 11px; background: #fffaf1; }
@@ -166,6 +173,7 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   .workspace-grid { grid-template-columns: 1fr; }
   .scan-strip { grid-template-columns: repeat(2, 1fr); }
   .run-button { min-height: 48px; grid-column: 1 / -1; }
+  .radar-filters { grid-template-columns: repeat(3, 1fr); }
 }
 
 @media (max-width: 720px) {
@@ -185,6 +193,7 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   footer { display: block; line-height: 1.5; }
   .glossary-grid { grid-template-columns: 1fr; }
   .caveat-card ul { grid-template-columns: 1fr; }
+  .radar-filters { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 430px) {

@@ -1,6 +1,21 @@
-# Scan Orchestration — Phase 2A v1.2
+# Scan Orchestration — Phase 2A v1.3
 
-Specification: `signal_spec_v1.2_phase2a`
+Specification: `signal_spec_v1.3_phase2a`
+
+Accepted v1.2 runs retain their original specification and universal Discovery Score for historical
+diagnostics only. New v1.3 routing never rewrites or uses that score as the primary selector.
+
+## Workflow 0 — Three-job daily collection
+
+CLI: `python -m app.cli archive-mag7-daily`
+
+At the externally scheduled Asia/Singapore 12:00 trigger, the orchestrator runs Daily OI Archive,
+Daily Activity (`expiry_breakdown` plus `options_volume`), and Daily Radar (`oi_change`) across the
+required MAG7 coverage. Subjobs are isolated and the parent reports `COMPLETE`, `PARTIAL`, or
+`FAILED` truthfully. Activity identity is ticker + expiry + New York observation session. Radar
+identity is ticker + exact contract symbol + vendor observation date. Persisted legacy Radar raw
+evidence can be locally evaluated under v1.3 without a network call before missing ticker/date
+coverage is backfilled.
 
 ## Workflow A — Daily OI Archive
 
@@ -39,8 +54,7 @@ The browser calls only Next.js `/api/mag7-scan` and never Nightwatch.
    bonus. Eligibility is evaluated on the underlying tracks before ranking.
 5. S4 selects at most four tickers and one strongest eligible expiry in each 0–90 DTE bucket.
 6. S5 reads the latest valid complete chain from PostgreSQL, calculates contract structure and
-   persistence, requests one ranked OI Change Radar payload per selected ticker, and builds same-side
-   OI clusters.
+   persistence, reuses latest persisted OI Change Radar evidence, and builds same-side OI clusters.
 7. S6 persists bucket summaries and safe dashboard fields, including the full score distribution,
    ranked eligible expiries, and DTE-0 baseline status.
 
@@ -48,8 +62,16 @@ The interactive budget remains 75 consumed units and 100 attempts. It never rebu
 0–180 archive and never calls contract intraday. Thirty-minute raw reuse remains available for fresh
 same-day endpoints. Radar absence is neutral.
 
-Raw vendor responses are persisted before normalized/derived rows. Every v1.2 run snapshots its
-configuration and carries `signal_spec_v1.2_phase2a`; v1.0 and v1.1 records remain immutable evidence.
+Raw vendor responses are persisted before normalized/derived rows. Every v1.3 run snapshots its
+configuration and carries `signal_spec_v1.3_phase2a`; v1.0, v1.1, and v1.2 remain immutable.
+
+## Three-route selection
+
+Radar Event, contract/expiry Persistent Positioning, Expiry Activity, and explicit Structural Cold
+Start independently create eligibility. Reasons remain in `trigger_sources`; the same ticker/expiry
+chain is loaded at most once. Radar ranks by Premium then absolute ΔOI. Exact archive matching is
+literal string equality. Unmatched/incomplete evidence stays visible but cannot fabricate structure.
+Monthly OPEX inference and Same-Day Score Basis are display context with score weight zero.
 
 ## Scheduling requirement
 

@@ -88,6 +88,9 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
         def scalar(self, _statement):  # type: ignore[no-untyped-def]
             return None
 
+        def scalars(self, _statement):  # type: ignore[no-untyped-def]
+            return []
+
     app.dependency_overrides[get_db_session] = lambda: EmptySession()
     try:
         with TestClient(app) as client:
@@ -113,6 +116,33 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
         "top_expiries": [],
         "zero_dte_status": [],
         "structural_cold_start": [],
+        "specification_version": "signal_spec_v1.3_phase2a",
+        "threshold_profile": {
+            "profile_id": "radar_material_event",
+            "version": "2026-08-13.v1",
+            "enabled": True,
+            "min_premium_usd": "150000",
+            "min_abs_oi_diff": 2500,
+            "calibration_review_sessions": 20,
+            "configuration_hash": (
+                "53cf4e40bbbd1d7efdeaf21e1443610726009747466dae81908ac0a84dad8a33"
+            ),
+        },
+        "radar_filters": {"min_premium_usd": 150000.0, "min_abs_oi_diff": 2500},
+        "latest_contract_events": [],
+        "all_material_contract_events": [],
+        "persistent_positioning": [],
+        "unusual_expiry_activity": [],
+        "research_candidates": [],
+        "route_counts": {
+            "radar_events": 0,
+            "persistent_contracts": 0,
+            "expiry_activity": 0,
+            "expiry_persistence": 0,
+            "structural_cold_start": 0,
+            "multiple_routes": 0,
+        },
+        "legacy_v12_available": False,
     }
 
 

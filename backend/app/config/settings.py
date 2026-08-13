@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,6 +35,16 @@ class Settings(BaseSettings):
     nightwatch_max_concurrency: int = Field(default=4, ge=1, le=32)
     nightwatch_metadata_refresh_seconds: int = Field(default=900, ge=60)
     scan_schedule_enabled: bool = False
+
+    # Radar eligibility values are process configuration, not business-logic constants. The
+    # explicit identity/version is persisted with every evaluation so changing an active profile
+    # never changes the meaning of historical rows.
+    radar_threshold_profile_id: str = "radar_material_event"
+    radar_threshold_profile_version: str = "2026-08-13.v1"
+    radar_threshold_enabled: bool = True
+    radar_min_premium_usd: Decimal = Field(default=Decimal("150000"), ge=0)
+    radar_min_abs_oi_diff: int = Field(default=2500, ge=0)
+    radar_calibration_review_sessions: int = Field(default=20, ge=1)
 
     market_timezone: str = "America/New_York"
     persisted_timezone: str = "UTC"

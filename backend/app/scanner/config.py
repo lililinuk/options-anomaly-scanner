@@ -3,7 +3,7 @@ from typing import Final
 
 from app.models.signals import DEFAULT_DTE_BUCKET_RULES
 
-SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.2_phase2a"
+SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.3_phase2a"
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,10 @@ COMPONENT_MAX: Final = {
 
 
 def configuration_snapshot() -> dict[str, object]:
+    # Imported lazily to keep configuration dataclasses free from Settings initialization side
+    # effects during module import and migration discovery.
+    from app.scanner.v13 import active_radar_threshold_profile
+
     return {
         "version": SIGNAL_SPEC_VERSION,
         "universe": {"mode": "FIXED_LIST", "tickers": list(UNIVERSE)},
@@ -123,6 +127,7 @@ def configuration_snapshot() -> dict[str, object]:
         },
         "selection_and_budget": asdict(LIMITS),
         "daily_oi_archive": asdict(ARCHIVE_LIMITS),
+        "radar_discovery": active_radar_threshold_profile().snapshot(),
         "scheduling": {
             "in_process": False,
             "external_schedule_required": True,

@@ -1,11 +1,30 @@
 # Signal Specification — Phase 2A
 
-Current immutable version: `signal_spec_v1.2_phase2a`
+Current immutable version: `signal_spec_v1.3_phase2a`
 
 Historical version `signal_spec_v1.0_phase2a` remains attached to its existing scan records and is
 never recalculated in place. Version `signal_spec_v1.1_phase2a` also remains immutable. Phase 2A v1.2 describes activity and OI positioning structure. It does
 not infer opening buyers, investor direction, BUY/SELL, GEX trading logic, lifecycle, Tradeability,
 or any Phase 2B signal.
+
+## v1.2 → v1.3 three-route amendment
+
+v1.3 retains all accepted v1.2 Same-Day and Persistent formulas but removes the universal Discovery
+Score from the primary workflow. Radar Event, Persistent Positioning, and Expiry Activity are
+independent routes. Accepted v1.0, v1.1, and v1.2 rows remain immutable.
+
+The initial Radar profile uses minimum aggregate Premium USD 150,000 and minimum absolute OI
+difference 2,500. Both values live only in runtime/versioned configuration and are supplied to the
+eligibility evaluator; the evaluator contains neither value. The 2,500 value is a rounded
+calibration from the Pre-v1.3 diagnostic p75 absolute OI Diff of approximately 2,648, not a universal
+market truth. Review it after at least 20 distinct valid Radar sessions. Each event and run retains
+the effective profile ID, version, values, and configuration hash, so later profile activation cannot
+rewrite historical eligibility and future profile shapes need no schema redesign.
+
+Relative OI Change is context only. Exact Radar/archive matching does not parse OSI. Exact complete
+0–90 DTE matches may enter Deep Dive; 91–180 DTE is `LONG_DTE_RADAR_WATCH`; unmatched/incomplete
+evidence remains visible without fabricated structure. Monthly OPEX inference and Same-Day Score
+Basis have weight zero. No Phase 2B behavior is introduced.
 
 ## v1.0 → v1.1 amendment
 

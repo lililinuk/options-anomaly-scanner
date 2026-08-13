@@ -38,6 +38,9 @@ class ScanRun(Base):
     cache_hits: Mapped[int] = mapped_column(Integer, default=0)
     fresh_requests: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    radar_threshold_profile_id: Mapped[str | None] = mapped_column(String(64))
+    radar_threshold_profile_version: Mapped[str | None] = mapped_column(String(64))
+    radar_threshold_config_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class ScanStage(Base):
@@ -262,6 +265,16 @@ class ExpiryObservation(Base):
     discovery_secondary_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     discovery_confirmation_bonus: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
     discovery_evidence_breadth: Mapped[int | None] = mapped_column(Integer)
+    radar_route_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    persistent_route_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    expiry_activity_route_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    trigger_sources: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    deep_dive_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    standard_monthly_inferred: Mapped[bool] = mapped_column(Boolean, default=False)
+    monthly_context_source: Mapped[str | None] = mapped_column(String(16))
+    volume_share_points: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    neighbor_points: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    same_day_score_basis: Mapped[str | None] = mapped_column(String(32))
 
 
 class ContractScanObservation(Base):
@@ -320,6 +333,10 @@ class ContractScanObservation(Base):
     persistent_components: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     oi_change_radar_status: Mapped[str | None] = mapped_column(String(24))
     oi_change_radar_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    radar_route_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    persistent_route_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    trigger_sources: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    deep_dive_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class StrikeCluster(Base):
@@ -370,6 +387,76 @@ class DailyOiArchiveRun(Base):
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 
+class DailyCollectionRun(Base):
+    __tablename__ = "daily_collection_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trigger: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ny_market_date: Mapped[date] = mapped_column(Date)
+    specification_version: Mapped[str] = mapped_column(String(64))
+    radar_threshold_profile_id: Mapped[str] = mapped_column(String(64))
+    radar_threshold_profile_version: Mapped[str] = mapped_column(String(64))
+    radar_threshold_config_hash: Mapped[str] = mapped_column(String(64))
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    subjobs: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    consumed_quota_units: Mapped[int] = mapped_column(Integer, default=0)
+    network_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class DailyCollectionCoverage(Base):
+    __tablename__ = "daily_collection_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "subjob", "ticker", "observation_date", name="uq_daily_coverage_job_ticker_date"
+        ),
+        Index("ix_daily_coverage_job_date", "subjob", "observation_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    daily_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("daily_collection_runs.id"))
+    subjob: Mapped[str] = mapped_column(String(24))
+    ticker: Mapped[str] = mapped_column(String(16))
+    observation_date: Mapped[date] = mapped_column(Date)
+    vendor_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(32))
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class DailyExpiryActivitySnapshot(Base):
+    __tablename__ = "daily_expiry_activity_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "expiration", "observation_date", name="uq_daily_activity_identity"
+        ),
+        Index("ix_daily_activity_history", "ticker", "expiration", "observation_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    daily_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("daily_collection_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    expiration: Mapped[date] = mapped_column(Date)
+    observation_date: Mapped[date] = mapped_column(Date)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    vendor_date: Mapped[date | None] = mapped_column(Date)
+    vendor_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dte: Mapped[int] = mapped_column(Integer)
+    total_volume: Mapped[int] = mapped_column(BigInteger)
+    ticker_scope_volume: Mapped[int] = mapped_column(BigInteger)
+    volume_share: Mapped[Decimal | None] = mapped_column(Numeric(12, 8))
+    call_volume_context: Mapped[int | None] = mapped_column(BigInteger)
+    put_volume_context: Mapped[int | None] = mapped_column(BigInteger)
+    raw_payload_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    specification_version: Mapped[str] = mapped_column(String(64))
+
+
 class ZeroDteActivityDailySnapshot(Base):
     __tablename__ = "zero_dte_activity_daily_snapshots"
     __table_args__ = (
@@ -380,7 +467,8 @@ class ZeroDteActivityDailySnapshot(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    scan_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scan_runs.id"))
+    scan_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scan_runs.id"))
+    daily_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("daily_collection_runs.id"))
     ticker: Mapped[str] = mapped_column(String(16))
     observation_date: Mapped[date] = mapped_column(Date)
     expiration: Mapped[date] = mapped_column(Date)
@@ -483,13 +571,14 @@ class OiChangeRadarObservation(Base):
     __tablename__ = "oi_change_radar_observations"
     __table_args__ = (
         UniqueConstraint(
-            "source_request_id", "contract_symbol", name="uq_oi_radar_request_contract"
+            "ticker", "contract_symbol", "observation_date", name="uq_oi_radar_identity"
         ),
         Index("ix_oi_radar_ticker_date", "ticker", "observation_date"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    scan_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scan_runs.id"))
+    scan_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scan_runs.id"))
+    daily_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("daily_collection_runs.id"))
     ticker: Mapped[str] = mapped_column(String(16))
     contract_symbol: Mapped[str] = mapped_column(String(64))
     observation_date: Mapped[date | None] = mapped_column(Date)
@@ -509,6 +598,31 @@ class OiChangeRadarObservation(Base):
     raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
     source_request_id: Mapped[str] = mapped_column(String(128))
     specification_version: Mapped[str] = mapped_column(String(64))
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ny_market_date: Mapped[date | None] = mapped_column(Date)
+    material_event_eligible: Mapped[bool | None] = mapped_column(Boolean)
+    radar_route_eligible: Mapped[bool | None] = mapped_column(Boolean)
+    eligibility_reason: Mapped[str | None] = mapped_column(String(64))
+    threshold_profile_id: Mapped[str | None] = mapped_column(String(64))
+    threshold_profile_version: Mapped[str | None] = mapped_column(String(64))
+    threshold_config_hash: Mapped[str | None] = mapped_column(String(64))
+    effective_thresholds: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    premium_per_trade: Mapped[Decimal | None] = mapped_column(Numeric(22, 6))
+    volume_per_trade: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    archive_match_status: Mapped[str | None] = mapped_column(String(32))
+    matched_expiration: Mapped[date | None] = mapped_column(Date)
+    matched_dte: Mapped[int | None] = mapped_column(Integer)
+    matched_right: Mapped[str | None] = mapped_column(String(1))
+    matched_strike: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    archived_oi: Mapped[int | None] = mapped_column(BigInteger)
+    archive_vendor_oi_date: Mapped[date | None] = mapped_column(Date)
+    archive_completeness: Mapped[str | None] = mapped_column(String(32))
+    contract_structure_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    contract_persistent_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
+    radar_scope: Mapped[str | None] = mapped_column(String(32))
+    deep_dive_eligible: Mapped[bool | None] = mapped_column(Boolean)
+    trigger_sources: Mapped[list[str] | None] = mapped_column(JSONB)
+    risk_flags: Mapped[list[str] | None] = mapped_column(JSONB)
 
 
 class BucketPositioningSummary(Base):

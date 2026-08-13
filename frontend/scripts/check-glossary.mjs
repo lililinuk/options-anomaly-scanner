@@ -8,27 +8,26 @@ const keys = new Set([...glossaryBlock[1].matchAll(/^\s{2}([a-z0-9_]+):/gm)].map
 const columns = [...columnsBlock[1].matchAll(/"([a-z0-9_]+)"/g)].map((match) => match[1]);
 const missing = columns.filter((column) => !keys.has(column));
 if (missing.length) throw new Error(`Missing zh-TW glossary definitions: ${missing.join(", ")}`);
-console.log(`Glossary completeness: ${columns.length} visible analytical columns, ${keys.size} documented fields`);
+console.log(`Glossary completeness: ${columns.length} legacy columns, ${keys.size} documented fields`);
 
 const dashboard = readFileSync(new URL("../app/scan-dashboard.tsx", import.meta.url), "utf8");
 if (!dashboard.includes('if (value == null || value === "") return "—"')) {
   throw new Error("Dashboard must render unavailable analytical values as an em dash");
 }
 for (const required of [
-  "same_day_activity_score", "persistent_positioning_score", "discovery_score",
-  "oi_share", "oi_share_change", "contract_structure_score",
-  "contract_persistent_score", "oi_change_radar_status", "archive_vendor_oi_date",
-  "discovery_evidence_breadth", "dte",
+  "Radar Material Event", "Premium", "ΔOI", "OI Change %", "Persistent Positioning",
+  "Expiry Activity", "Monthly OPEX", "Score Basis", "Trigger Sources",
+  "Radar Archive Match", "Radar Threshold Profile",
 ]) {
-  if (!columns.includes(required)) throw new Error(`Required v1.2 dashboard field missing: ${required}`);
+  if (!source.includes(required)) throw new Error(`Required v1.3 glossary concept missing: ${required}`);
 }
 for (const required of [
-  "0DTE Baseline", "Rolling Mean", "Rolling Median + MAD", "Historical Percentile",
-  "Evidence Breadth", "Cold Start",
+  "Latest Contract Events", "Persistent Positioning", "Unusual Expiry Activity",
+  "Deep Dive / Research Candidates",
 ]) {
-  if (!source.includes(required)) throw new Error(`Required v1.2 glossary concept missing: ${required}`);
+  if (!dashboard.includes(required)) throw new Error(`Required v1.3 dashboard view missing: ${required}`);
 }
-for (const required of ["Cross-MAG7 Expiry Selectivity", "Top Expiry Discoveries", "Previous-20 Baseline Status"]) {
-  if (!dashboard.includes(required)) throw new Error(`Required v1.2 dashboard view missing: ${required}`);
+for (const forbidden of ["api.yehangshe.com", "NIGHTWATCH_API_KEY", "NEXT_PUBLIC_NIGHTWATCH"]) {
+  if (dashboard.includes(forbidden)) throw new Error(`Browser code contains forbidden Nightwatch material: ${forbidden}`);
 }
-console.log("Dashboard null-safety and Phase 2A v1.2 visible-field/distribution coverage: passed");
+console.log("Dashboard null-safety and Phase 2A v1.3 route/glossary coverage: passed");

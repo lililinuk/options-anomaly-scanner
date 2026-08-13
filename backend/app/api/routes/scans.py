@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -20,7 +20,7 @@ from app.db.session import get_db_session
 from app.nightwatch.client import NightwatchClient
 from app.scanner.config import LIMITS, UNIVERSE
 from app.scanner.service import ConcurrentScanError, ScanSummary
-from app.scanner.v12 import Mag7Scanner
+from app.scanner.v13 import Mag7Scanner, active_radar_threshold_profile
 
 router = APIRouter()
 database_session = Depends(get_db_session)
@@ -65,12 +65,21 @@ async def run_mag7_scan(session: Session = database_session) -> ScanSummaryRespo
 def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
     run = session.scalar(
         select(ScanRun)
-        .where(ScanRun.specification_version == "signal_spec_v1.2_phase2a")
+        .where(ScanRun.specification_version == "signal_spec_v1.3_phase2a")
         .order_by(desc(ScanRun.started_at))
         .limit(1)
     )
     if run is None:
-        return {
+        # Preserve access to accepted v1.2 history until the first v1.3 interactive run. Daily
+        # Radar evidence is still returned independently below.
+        run = session.scalar(
+            select(ScanRun)
+            .where(ScanRun.specification_version == "signal_spec_v1.2_phase2a")
+            .order_by(desc(ScanRun.started_at))
+            .limit(1)
+        )
+    if run is None:
+        empty = {
             "scan": None,
             "results": [],
             "distribution": _distribution([]),
@@ -78,6 +87,8 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
             "zero_dte_status": [],
             "structural_cold_start": [],
         }
+        empty.update(_v13_sections(session, None, [], []))
+        return empty
     expiries = list(
         session.scalars(
             select(ExpiryObservation).where(ExpiryObservation.scan_run_id == run.id)
@@ -208,7 +219,7 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
         for row in expiries
         if row.structural_cold_start_eligible and row.discovery_score is None
     ]
-    return {
+    payload = {
         "scan": {
             "scan_run_id": str(run.id),
             "status": run.status,
@@ -230,6 +241,237 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
         "top_expiries": [_expiry_public(row) for row in top_expiries],
         "zero_dte_status": [_zero_dte_public(row) for row in zero_dte],
         "structural_cold_start": [_expiry_public(row) for row in cold_only],
+    }
+    payload.update(_v13_sections(session, run, expiries, contracts))
+    return payload
+
+
+def _v13_sections(
+    session: Session,
+    run: ScanRun | None,
+    expiries: list[ExpiryObservation],
+    contracts: list[ContractScanObservation],
+) -> dict[str, Any]:
+    profile = active_radar_threshold_profile()
+    radar_rows: list[OiChangeRadarObservation] = []
+    for ticker in UNIVERSE:
+        latest = session.scalar(
+            select(func.max(OiChangeRadarObservation.observation_date)).where(
+                OiChangeRadarObservation.ticker == ticker,
+                OiChangeRadarObservation.material_event_eligible.is_(True),
+            )
+        )
+        if latest:
+            radar_rows.extend(
+                session.scalars(
+                    select(OiChangeRadarObservation).where(
+                        OiChangeRadarObservation.ticker == ticker,
+                        OiChangeRadarObservation.observation_date == latest,
+                        OiChangeRadarObservation.material_event_eligible.is_(True),
+                    )
+                )
+            )
+    radar_rows.sort(
+        key=lambda row: (_float(row.premium) or 0, abs(row.delta_oi or 0)), reverse=True
+    )
+    material_events = [_radar_public(row) for row in radar_rows]
+
+    persistent_contracts = [
+        row
+        for row in contracts
+        if row.persistent_positioning_score is not None
+        and float(row.persistent_positioning_score) >= LIMITS.persistent_eligibility_score
+    ]
+    persistent_contracts.sort(
+        key=lambda row: float(row.persistent_positioning_score or 0), reverse=True
+    )
+    activity = [row for row in expiries if row.expiry_activity_route_eligible]
+    activity.sort(key=lambda row: float(row.same_day_activity_score or 0), reverse=True)
+    deep_dive = _deep_dive_public(radar_rows, persistent_contracts, expiries)
+    return {
+        "specification_version": "signal_spec_v1.3_phase2a",
+        "threshold_profile": profile.snapshot(),
+        "radar_filters": {
+            "min_premium_usd": _float(profile.min_premium_usd),
+            "min_abs_oi_diff": profile.min_abs_oi_diff,
+        },
+        "latest_contract_events": material_events[:15],
+        "all_material_contract_events": material_events,
+        "persistent_positioning": [_persistent_public(row) for row in persistent_contracts],
+        "unusual_expiry_activity": [_activity_public(row) for row in activity],
+        "research_candidates": deep_dive,
+        "route_counts": _route_counts(radar_rows, persistent_contracts, expiries),
+        "legacy_v12_available": bool(
+            run and run.specification_version == "signal_spec_v1.2_phase2a"
+        ),
+    }
+
+
+def _radar_public(row: OiChangeRadarObservation) -> dict[str, Any]:
+    return {
+        "ticker": row.ticker,
+        "contract_symbol": row.contract_symbol,
+        "vendor_observation_date": row.observation_date.isoformat()
+        if row.observation_date
+        else None,
+        "previous_observation_date": row.previous_date.isoformat()
+        if row.previous_date
+        else None,
+        "previous_oi": row.previous_oi,
+        "current_oi": row.current_oi,
+        "oi_diff": row.delta_oi,
+        "oi_change": _float(row.relative_oi_change),
+        "volume": row.volume,
+        "trades": row.trades,
+        "premium_usd": _float(row.premium),
+        "avg_price_usd": _float(row.average_price),
+        "last_bid_usd": _float(row.last_bid),
+        "last_ask_usd": _float(row.last_ask),
+        "last_fill_usd": _float(row.last_fill),
+        "vendor_rank": row.rank,
+        "premium_per_trade": _float(row.premium_per_trade),
+        "volume_per_trade": _float(row.volume_per_trade),
+        "archive_match_status": row.archive_match_status or "UNAVAILABLE",
+        "expiration": row.matched_expiration.isoformat() if row.matched_expiration else None,
+        "dte": row.matched_dte,
+        "right": row.matched_right,
+        "strike": _float(row.matched_strike),
+        "archived_oi": row.archived_oi,
+        "archive_completeness": row.archive_completeness or "UNAVAILABLE",
+        "contract_structure_score": _float(row.contract_structure_score),
+        "contract_persistent_score": _float(row.contract_persistent_score),
+        "radar_scope": row.radar_scope,
+        "deep_dive_eligible": row.deep_dive_eligible,
+        "trigger_sources": row.trigger_sources or [],
+        "risk_flags": row.risk_flags or [],
+        "threshold_profile_id": row.threshold_profile_id,
+        "threshold_profile_version": row.threshold_profile_version,
+    }
+
+
+def _persistent_public(row: ContractScanObservation) -> dict[str, Any]:
+    windows = (row.persistent_components or {}).get("windows", {})
+    return {
+        "ticker": row.ticker,
+        "contract_symbol": row.contract_symbol,
+        "expiration": row.expiration.isoformat(),
+        "dte": row.dte_at_detection,
+        "right": row.right,
+        "strike": _float(row.strike),
+        "oi_change_3": windows.get("3", {}).get("net_oi_change"),
+        "oi_change_5": windows.get("5", {}).get("net_oi_change"),
+        "oi_change_10": windows.get("10", {}).get("net_oi_change"),
+        "oi_growth": windows.get(str(row.persistent_winning_window), {}).get("oi_growth")
+        if row.persistent_winning_window
+        else None,
+        "persistent_state": row.persistent_state,
+        "persistent_score": _float(row.persistent_positioning_score),
+        "winning_window": row.persistent_winning_window,
+        "history_confidence": row.history_confidence,
+        "history_observation_count": row.history_observation_count,
+        "history_required": 3,
+    }
+
+
+def _activity_public(row: ExpiryObservation) -> dict[str, Any]:
+    return {
+        "ticker": row.ticker,
+        "expiry": row.expiration.isoformat(),
+        "dte": row.dte_at_detection,
+        "same_day_activity_score": _float(row.same_day_activity_score),
+        "volume_share": _float(row.volume_share),
+        "volume_share_points": _float(row.volume_share_points),
+        "neighbor_ratio": _float(row.neighbor_ratio),
+        "neighbor_points": _float(row.neighbor_points),
+        "score_basis": row.same_day_score_basis,
+        "standard_monthly_inferred": row.standard_monthly_inferred,
+        "monthly_context_source": row.monthly_context_source,
+        "baseline_status": row.same_day_baseline_status,
+        "baseline_observation_count": row.baseline_observation_count,
+    }
+
+
+def _deep_dive_public(
+    radar: list[OiChangeRadarObservation],
+    persistent: list[ContractScanObservation],
+    expiries: list[ExpiryObservation],
+) -> list[dict[str, Any]]:
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in radar:
+        if not row.deep_dive_eligible:
+            continue
+        key = (row.ticker, row.contract_symbol)
+        candidates[key] = {
+            "ticker": row.ticker,
+            "contract_or_expiry": row.contract_symbol,
+            "expiration": row.matched_expiration.isoformat() if row.matched_expiration else None,
+            "trigger_sources": row.trigger_sources or ["RADAR_EVENT"],
+            "radar_premium_usd": _float(row.premium),
+            "radar_oi_diff": row.delta_oi,
+            "persistent_score": _float(row.contract_persistent_score),
+            "expiry_activity_score": None,
+            "structure_score": _float(row.contract_structure_score),
+            "archive_completeness": row.archive_completeness,
+            "risk_flags": row.risk_flags or [],
+        }
+    for row in persistent:
+        key = (row.ticker, row.contract_symbol)
+        item = candidates.setdefault(
+            key,
+            {
+                "ticker": row.ticker,
+                "contract_or_expiry": row.contract_symbol,
+                "expiration": row.expiration.isoformat(),
+                "trigger_sources": [],
+                "radar_premium_usd": None,
+                "radar_oi_diff": None,
+                "expiry_activity_score": None,
+                "archive_completeness": "COMPLETE_ARCHIVE_REUSED",
+                "risk_flags": row.risk_flags or [],
+            },
+        )
+        item["persistent_score"] = _float(row.persistent_positioning_score)
+        item["structure_score"] = _float(row.structure_score)
+        item["trigger_sources"] = sorted(
+            set([*item["trigger_sources"], "CONTRACT_PERSISTENCE"])
+        )
+    for row in expiries:
+        if not row.deep_dive_eligible:
+            continue
+        key = (row.ticker, row.expiration.isoformat())
+        candidates.setdefault(
+            key,
+            {
+                "ticker": row.ticker,
+                "contract_or_expiry": row.expiration.isoformat(),
+                "expiration": row.expiration.isoformat(),
+                "trigger_sources": row.trigger_sources or [],
+                "radar_premium_usd": None,
+                "radar_oi_diff": None,
+                "persistent_score": _float(row.persistent_positioning_score),
+                "expiry_activity_score": _float(row.same_day_activity_score),
+                "structure_score": None,
+                "archive_completeness": "COMPLETE_ARCHIVE_REUSED"
+                if row.selected_for_deep_scan
+                else "NOT_LOADED",
+                "risk_flags": [],
+            },
+        )
+    return list(candidates.values())
+
+
+def _route_counts(
+    radar: list[OiChangeRadarObservation],
+    persistent: list[ContractScanObservation],
+    expiries: list[ExpiryObservation],
+) -> dict[str, int]:
+    return {
+        "radar_events": len(radar),
+        "persistent_contracts": len(persistent),
+        "expiry_activity": sum(row.expiry_activity_route_eligible for row in expiries),
+        "expiry_persistence": sum(row.persistent_route_eligible for row in expiries),
+        "structural_cold_start": sum(row.structural_cold_start_eligible for row in expiries),
+        "multiple_routes": sum(len(set(row.trigger_sources or [])) > 1 for row in expiries),
     }
 
 
