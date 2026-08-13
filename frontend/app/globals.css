@@ -123,6 +123,23 @@ h1 { max-width: 720px; margin: 0; color: #122632; font-family: Georgia, "Times N
 .radar-filters input, .radar-filters select { min-width: 0; border: 1px solid var(--line); border-radius: 5px; padding: 8px; color: var(--ink); background: #fff; font: inherit; }
 .secondary-button { align-self: end; min-height: 34px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: #f5f7f7; cursor: pointer; }
 .context-badge, .route-badge { display: inline-block; margin: 2px 4px 2px 0; border: 1px solid rgba(27, 119, 104, .35); border-radius: 999px; padding: 3px 7px; color: #166b5e; background: rgba(27, 119, 104, .07); font-size: 9px; white-space: nowrap; }
+.context-link { padding: 0; color: var(--teal); border: 0; background: transparent; font: inherit; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.context-message { margin: 0; padding: 16px 22px; color: var(--muted); border-top: 1px solid var(--line); font-size: 12px; }
+.confirmation-workspace { padding: 22px; border-top: 1px solid var(--line); background: #f9fbfa; }
+.confirmation-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.confirmation-heading h3 { margin: 6px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 500; }
+.direction-badge { padding: 8px 12px; color: #72541d; border: 1px solid #e4d2a9; border-radius: 999px; background: #fff9e9; font-size: 10px; font-weight: 800; letter-spacing: .04em; }
+.confirmation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.confirmation-grid article { min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.confirmation-grid h4 { margin: 0 0 13px; color: #19313d; font-family: Georgia, "Times New Roman", serif; font-size: 16px; font-weight: 500; }
+.confirmation-grid dl { display: grid; gap: 8px; margin: 0; }
+.confirmation-grid dl div { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(0, 1.2fr); gap: 12px; }
+.confirmation-grid dt { color: var(--faint); font-size: 9px; font-weight: 750; text-transform: uppercase; }
+.confirmation-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #344b55; font-size: 11px; }
+.confirmation-grid small, .ranked-rows { display: block; margin: 13px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.data-warning { padding: 12px; color: #76551e; border-radius: 7px; background: #fff8e8; font-size: 11px; }
+.data-age-card { grid-column: 1 / -1; }
+.data-age-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .event-detail { min-width: 330px; padding: 10px 0; color: var(--muted); font-size: 10px; line-height: 1.65; }
 details summary { cursor: pointer; color: var(--ink); }
 
@@ -174,6 +191,8 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   .scan-strip { grid-template-columns: repeat(2, 1fr); }
   .run-button { min-height: 48px; grid-column: 1 / -1; }
   .radar-filters { grid-template-columns: repeat(3, 1fr); }
+  .confirmation-grid { grid-template-columns: 1fr; }
+  .data-age-card { grid-column: auto; }
 }
 
 @media (max-width: 720px) {
@@ -194,6 +213,7 @@ footer span { margin: 0 7px; color: #bdc6c9; }
   .glossary-grid { grid-template-columns: 1fr; }
   .caveat-card ul { grid-template-columns: 1fr; }
   .radar-filters { grid-template-columns: 1fr 1fr; }
+  .data-age-card dl { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 430px) {

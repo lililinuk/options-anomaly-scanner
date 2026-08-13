@@ -8,6 +8,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.confirmation.service import latest_candidate_context
 from app.db.models import (
     ContractScanObservation,
     DailyOiArchiveRun,
@@ -244,6 +245,18 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
     }
     payload.update(_v13_sections(session, run, expiries, contracts))
     return payload
+
+
+@router.get("/candidates/{contract_symbol}/confirmation")
+def candidate_confirmation(
+    contract_symbol: str, session: Session = database_session
+) -> dict[str, Any]:
+    """Read persisted Phase 2B evidence; this route never contacts Nightwatch."""
+
+    context = latest_candidate_context(session, contract_symbol)
+    if context is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Context not available")
+    return context
 
 
 def _v13_sections(

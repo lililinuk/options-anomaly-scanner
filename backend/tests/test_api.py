@@ -19,6 +19,39 @@ def test_application_health_is_utc_and_does_not_contact_vendor() -> None:
     assert payload["checked_at"].endswith("Z")
 
 
+def test_candidate_confirmation_reads_persisted_context_only(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    expected = {
+        "candidate": {"contract_symbol": "NVDA260821C00220000", "direction": "UNRESOLVED"},
+        "specification_version": "signal_spec_v1.0_phase2b",
+    }
+    monkeypatch.setattr(
+        "app.api.routes.scans.latest_candidate_context", lambda _session, _symbol: expected
+    )
+    app.dependency_overrides[get_db_session] = lambda: object()
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/scans/candidates/NVDA260821C00220000/confirmation"
+            )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+def test_candidate_confirmation_missing_context_is_404(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(
+        "app.api.routes.scans.latest_candidate_context", lambda _session, _symbol: None
+    )
+    app.dependency_overrides[get_db_session] = lambda: object()
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/scans/candidates/MISSING/confirmation")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 404
+
+
 def test_system_status_is_truthful_phase_one_placeholder() -> None:
     refresh = SimpleNamespace(detected_at=None, observed_at="2026-08-10T12:00:00Z")
     usage = SimpleNamespace(

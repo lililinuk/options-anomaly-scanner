@@ -89,6 +89,22 @@ type ResearchCandidate = {
   risk_flags: string[];
 };
 
+type Phase2bContext = {
+  candidate: { ticker: string; contract_symbol: string; expiration: string; dte: number | null;
+    right: string; strike: number; trigger_sources: string[]; direction: string };
+  phase2a: Record<string, unknown>;
+  price: { stock_state: Record<string, unknown>; history: Record<string, unknown>;
+    strike_location: Record<string, unknown> };
+  volatility: { iv_rank: Record<string, unknown>; term: Record<string, unknown> };
+  dealer: Record<string, unknown>;
+  execution: Record<string, unknown>;
+  data_quality: Record<string, unknown>;
+  timestamps: Record<string, unknown>;
+  specification_version: string;
+  config_version: string;
+  evaluated_at: string;
+};
+
 type Payload = {
   scan: Scan | null;
   specification_version?: string;
@@ -129,6 +145,8 @@ export function ScanDashboard() {
   const [minDte, setMinDte] = useState(0);
   const [maxDte, setMaxDte] = useState(180);
   const [showAll, setShowAll] = useState(false);
+  const [context, setContext] = useState<Phase2bContext | null>(null);
+  const [contextMessage, setContextMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const response = await fetch("/api/mag7-scan", { cache: "no-store" });
@@ -167,6 +185,23 @@ export function ScanDashboard() {
     } finally {
       setRunning(false);
     }
+  }
+
+  async function openContext(contract: string) {
+    if (!/^[A-Z0-9]{1,32}$/.test(contract)) return;
+    setContextMessage("Loading persisted confirmation context…");
+    const response = await fetch(`/api/candidate-context?contract=${encodeURIComponent(contract)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      setContext(null);
+      setContextMessage(response.status === 404
+        ? "Phase 2B context has not been captured for this candidate yet."
+        : "Confirmation context is temporarily unavailable.");
+      return;
+    }
+    setContext((await response.json()) as Phase2bContext);
+    setContextMessage(null);
   }
 
   return (
@@ -213,9 +248,48 @@ export function ScanDashboard() {
       <section className="panel results-panel" aria-labelledby="deep-title">
         <div className="panel-header"><div><span className="eyebrow">Research workspace</span><h2 id="deep-title">Deep Dive / Research Candidates</h2></div><small>No universal conviction score</small></div>
         <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract / Expiry</th><th>Trigger Sources</th><th>Radar Premium / ΔOI</th><th>Persistent</th><th>Expiry Activity</th><th>Structure</th><th>Archive</th><th>Flags</th></tr></thead>
-          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>No route-qualified research candidate is available yet.</td></tr>}</tbody>
+          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{/^[A-Z0-9]{1,32}$/.test(row.contract_or_expiry) ? <button className="context-link" type="button" onClick={() => void openContext(row.contract_or_expiry)}>{row.contract_or_expiry}</button> : row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>No route-qualified research candidate is available yet.</td></tr>}</tbody>
         </table></div>
+        {contextMessage && <p className="context-message" role="status">{contextMessage}</p>}
+        {context && <ConfirmationContext context={context} />}
       </section>
     </>
   );
+}
+
+function value(source: Record<string, unknown>, key: string): string {
+  const item = source[key];
+  if (typeof item === "boolean") return item ? "YES" : "NO";
+  return display(typeof item === "number" || typeof item === "string" ? item : null);
+}
+
+function ConfirmationContext({ context }: { context: Phase2bContext }) {
+  const stock = context.price.stock_state;
+  const history = context.price.history;
+  const location = context.price.strike_location;
+  const ivRank = context.volatility.iv_rank;
+  const term = context.volatility.term;
+  const candidateNode = (term.candidate_node ?? {}) as Record<string, unknown>;
+  const shorter = (term.nearest_shorter_node ?? {}) as Record<string, unknown>;
+  const longer = (term.nearest_longer_node ?? {}) as Record<string, unknown>;
+  const cell = (context.dealer.candidate_cell ?? {}) as Record<string, unknown>;
+  const row = (context.dealer.candidate_row_stack ?? {}) as Record<string, unknown>;
+  const ranked = Array.isArray(context.dealer.top_vendor_ranked_rows)
+    ? context.dealer.top_vendor_ranked_rows as Record<string, unknown>[] : [];
+  return <div className="confirmation-workspace" aria-label="Phase 2B confirmation context">
+    <div className="confirmation-heading"><div><span className="eyebrow">Phase 2B · Context only</span><h3>{context.candidate.ticker} · {context.candidate.contract_symbol}</h3></div><span className="direction-badge">Direction: {context.candidate.direction}</span></div>
+    <div className="confirmation-grid">
+      <ContextCard title="Candidate Summary" rows={[["Expiry / DTE", `${context.candidate.expiration} / ${display(context.candidate.dte)}`], ["Right / Strike", `${context.candidate.right} / ${display(context.candidate.strike)}`], ["Current price", value(stock, "current_price_usd")], ["Triggers", context.candidate.trigger_sources.join(", ")], ["Archive", value(context.phase2a, "archive_completeness")]]} />
+      <ContextCard title="Why It Was Found" rows={[["Radar event", value(context.phase2a, "radar_material_event")], ["Premium", money(typeof context.phase2a.premium_usd === "number" ? context.phase2a.premium_usd : null)], ["ΔOI", value(context.phase2a, "oi_diff")], ["Structure", value(context.phase2a, "structure_score")], ["Persistence", value(context.phase2a, "contract_persistence")]]} />
+      <article><h4>Price Context</h4><dl><div><dt>Price / session</dt><dd>{value(stock, "current_price_usd")} · {value(stock, "session")}</dd></div><div><dt>Stock State as-of</dt><dd>{value(stock, "as_of")}</dd></div><div><dt>Strike location</dt><dd>{value(location, "state")} · {percent(typeof location.strike_distance_pct === "number" ? location.strike_distance_pct : null)}</dd></div>{history.daily_session_policy !== "DAILY_SESSION_POLICY_UNRESOLVED" && <><div><dt>1D / 5D / 20D</dt><dd>{percent(typeof history.return_1d === "number" ? history.return_1d : null)} / {percent(typeof history.return_5d === "number" ? history.return_5d : null)} / {percent(typeof history.return_20d === "number" ? history.return_20d : null)}</dd></div><div><dt>SMA20 / SMA50</dt><dd>{value(history, "sma_20")} / {value(history, "sma_50")}</dd></div><div><dt>Trend / ATR14</dt><dd>{value(history, "trend")} / {value(history, "atr_14")}</dd></div><div><dt>Strike distance ATR</dt><dd>{value(location, "strike_distance_atr")}</dd></div></>}</dl>{history.daily_session_policy === "DAILY_SESSION_POLICY_UNRESOLVED" && <p className="data-warning">Price-history technical context unavailable</p>}<small>Adjustment semantics: {value(history, "price_adjustment_semantics")}</small></article>
+      <ContextCard title="Volatility Context" rows={[["Contract IV", value(term, "contract_iv")], ["Ticker IV Rank", value(ivRank, "value")], ["Expiry term IV", value(candidateNode, "implied_vol_pct")], ["Implied move", percent(typeof candidateNode.implied_move_pct === "number" ? candidateNode.implied_move_pct : null)], ["Shorter / longer IV", `${value(shorter, "implied_vol_pct")} / ${value(longer, "implied_vol_pct")}`], ["Exact match", value(term, "exact_match_status")]]} />
+      <article><h4>Dealer / GEX Context</h4><dl><div><dt>Quality / state</dt><dd>{value(context.dealer, "quality")} / {value(context.dealer, "vendor_state")}</dd></div><div><dt>Generated</dt><dd>{value(context.dealer, "generated_at")}</dd></div><div><dt>Candidate cell</dt><dd>{value(context.dealer, "candidate_heatmap_cell_status")}</dd></div><div><dt>Cell net / call / put</dt><dd>{value(cell, "net_dealer_gex_usd")} / {value(cell, "call_gex_usd")} / {value(cell, "put_gex_usd")}</dd></div><div><dt>Row net / abs / rank</dt><dd>{value(row, "row_net_wall_gex_usd")} / {value(row, "row_abs_wall_gex_usd")} / {value(row, "rank")}</dd></div></dl>{ranked.length > 0 && <p className="ranked-rows">Top vendor rows: {ranked.map((item) => `${value(item, "strike_usd")} (#${value(item, "rank")})`).join(" · ")}</p>}</article>
+      <ContextCard title="Liquidity / Greeks" rows={[["Bid / ask / mid", `${value(context.execution, "bid")} / ${value(context.execution, "ask")} / ${value(context.execution, "mid")}`], ["Spread USD / %", `${value(context.execution, "spread_usd")} / ${percent(typeof context.execution.spread_pct === "number" ? context.execution.spread_pct : null)}`], ["Delta / gamma", `${value(context.execution, "delta")} / ${value(context.execution, "gamma")}`], ["Theta / vega / charm", `${value(context.execution, "theta")} / ${value(context.execution, "vega")} / ${value(context.execution, "charm")}`]]} />
+      <article className="data-age-card"><h4>Data Quality / Timestamps</h4><dl>{Object.entries(context.timestamps).map(([key, item]) => <div key={key}><dt>{key}</dt><dd>{display(typeof item === "string" ? item : null)}</dd></div>)}</dl><small>{context.specification_version} · config {context.config_version}</small></article>
+    </div>
+  </div>;
+}
+
+function ContextCard({ title, rows }: { title: string; rows: [string, string][] }) {
+  return <article><h4>{title}</h4><dl>{rows.map(([label, item]) => <div key={label}><dt>{label}</dt><dd>{item}</dd></div>)}</dl></article>;
 }

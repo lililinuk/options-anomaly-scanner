@@ -105,6 +105,17 @@ export const fieldGlossary = {
   call_cluster_score: entry("Call 群集分數", "Call Cluster Score", "最強 Call 群集的分數。"),
   put_cluster_score: entry("Put 群集分數", "Put Cluster Score", "最強 Put 群集的分數。"),
   positioning_structure: entry("部位活動結構", "Positioning Structure", "Phase 2A 的側別結構標籤。", undefined, undefined, "描述活動，不是方向或買賣建議。"),
+  price_trend: entry("價格趨勢", "Price Trend", "以目前價格、SMA20 與 SMA50 關係形成的描述性狀態。", "price > SMA20 > SMA50 為 UPTREND；price < SMA20 < SMA50 為 DOWNTREND；其餘 MIXED。", "用來描述近期價格結構。", "不是價格預測；缺少可靠 regular-session 歷史時為 UNKNOWN。"),
+  atr_14: entry("十四期平均真實波幅", "ATR14", "最近十四個 regular sessions 的真實價格區間平均。", "True Range 為 high-low、|high-prev close|、|low-prev close| 的最大值，再取十四期平均。", "作為近期已實現價格波動尺度。", "OHLC split-adjustment semantics 尚未確認。"),
+  strike_distance_atr: entry("履約價 ATR 距離", "Strike Distance ATR", "合約履約價距目前股票價格多少個 ATR 單位。", "(strike − current stock-state price) / ATR14。", "只描述距離與尺度。", "正負不代表原始選擇權部位方向。"),
+  iv_rank_phase2b: entry("隱含波動率排名", "IV Rank", "供應商提供的一年期、ticker-level 0–100 IV Rank。", "直接保留供應商數值，不從合約 IV 推導。", "描述 ticker IV 在一年範圍中的相對位置。", "不是該合約自身 IV；Phase 2B v1 不建立 LOW／MID／HIGH。"),
+  term_structure_phase2b: entry("波動率期限結構", "IV Term Structure", "各選擇權到期日的供應商隱含波動率節點。", "先做候選到期日 exact match，再顯示較短與較長的最近 DTE 節點。", "用來透明比較不同到期日 IV。", "不插值，也不建立 CONTANGO／BACKWARDATION 分類。"),
+  implied_move_phase2b: entry("隱含波動幅度", "Implied Move", "供應商回傳之特定到期日預期幅度背景。", "直接顯示 implied_move_usd 與 implied_move_pct。", "只表示幅度背景。", "不代表上漲或下跌預測。"),
+  dealer_heatmap_phase2b: entry("Dealer 熱圖", "Dealer Heatmap", "供應商衍生的多到期日、多履約價 dealer-GEX surface。", "保留實際回傳 cells、row stacks、狀態與時間。", "提供候選周圍 dealer/GEX 結構背景。", "缺失 sparse cells 不得補零；不稱為支撐或壓力。"),
+  candidate_gex_cell: entry("候選 GEX 儲存格", "Candidate GEX Cell", "只有同一筆 Heatmap cell 同時精確符合候選 expiration 與 strike 才成立。", "expiration exact equality 且 strike numeric equality。", "EXACT_MATCH 才顯示 net/call/put GEX。", "只在 axes 出現並不構成候選 cell；缺失保持 NULL。"),
+  row_stack_phase2b: entry("履約價列堆疊", "Row Stack", "Heatmap 對某履約價的跨到期日列聚合與供應商排名。", "直接保留 row_net_wall_gex_usd、row_abs_wall_gex_usd 與 vendor rank。", "是 ticker-wide、多到期日履約價背景。", "與候選 expiration×strike cell 不同。"),
+  degraded_phase2b: entry("降級資料", "Degraded", "供應商有回傳資料，但標示其狀態或完整性降低／不確定。", "保留資料並將 quality 標為 AVAILABLE_DEGRADED。", "仍可研究已回傳證據。", "不得推論未回傳 cell，也不計算需要完整 surface 的集中度。"),
+  direction_unresolved: entry("方向未解析", "Direction Unresolved", "現有證據無法確立經濟發起部位是 long、short、spread 或 hedge。", "Phase 2B v1 固定保留 UNRESOLVED。", "將 positioning significance 與 directional interpretation 分離。", "Call、正 ΔOI、大 Premium、價格或 GEX 正負都不能單獨解決方向。"),
   last_scan: entry("最近掃描", "Last Scan", "此列結果所屬掃描的完成或開始時間。"),
 } satisfies Record<string, GlossaryEntry>;
 

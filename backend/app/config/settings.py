@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     radar_min_abs_oi_diff: int = Field(default=2500, ge=0)
     radar_calibration_review_sessions: int = Field(default=20, ge=1)
 
+    # Phase 2B evidence freshness and descriptive tolerances are versioned process
+    # configuration. Evaluations persist both this version and its effective snapshot.
+    phase2b_context_config_version: str = "2026-08-13.v1"
+    phase2b_stock_state_freshness_minutes: int = Field(default=15, ge=1)
+    phase2b_ohlc_freshness_minutes: int = Field(default=720, ge=1)
+    phase2b_iv_rank_freshness_minutes: int = Field(default=720, ge=1)
+    phase2b_term_structure_freshness_minutes: int = Field(default=720, ge=1)
+    phase2b_heatmap_freshness_minutes: int = Field(default=15, ge=1)
+    phase2b_at_spot_tolerance_pct: Decimal = Field(default=Decimal("0.0025"), ge=0)
+
     market_timezone: str = "America/New_York"
     persisted_timezone: str = "UTC"
 

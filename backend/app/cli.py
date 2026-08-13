@@ -6,10 +6,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
+from app.confirmation.service import Phase2bContextService
 from app.db.session import get_session_factory
 from app.metadata.service import ApiUsageCollector, refresh_metadata
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
+from app.persistence.api_usage import persist_api_usage
 from app.persistence.metadata import MetadataRepository
 from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
 from app.scanner.daily import DailyCollectionConcurrentError, DailyDataPipeline, DailyRadarBackfill
@@ -40,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
         "backfill-mag7-radar",
         help="Evaluate stored Radar and fetch only missing latest-date MAG7 ticker coverage",
     )
+    phase2b = subcommands.add_parser(
+        "refresh-phase2b-context",
+        help="Refresh five safe Phase 2B context products for selected persisted candidates",
+    )
+    phase2b.add_argument("--contract", action="append", required=True)
+    phase2b.add_argument("--force", action="store_true")
     return parser
 
 
@@ -212,6 +220,44 @@ async def run_backfill_mag7_radar() -> int:
     return 0
 
 
+async def run_phase2b_context(contracts: list[str], *, force: bool) -> int:
+    settings = get_settings()
+    collector = ApiUsageCollector()
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=1,
+                usage_observer=collector,
+            ) as client:
+                summary = await Phase2bContextService(session, client).refresh_contracts(
+                    contracts, force=force
+                )
+            for event in collector.events:
+                persist_api_usage(session, event)
+            session.commit()
+    except (SQLAlchemyError, NightwatchError, RuntimeError) as error:
+        print(f"Phase 2B context refresh failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    consumed = sum(event.consumed_quota is True for event in collector.events)
+    attempts = sum(event.attempt_count for event in collector.events)
+    remaining = next(
+        (event.quota_remaining for event in reversed(collector.events)
+         if event.quota_remaining is not None), None,
+    )
+    print(
+        f"Phase 2B context: evaluations={len(summary.evaluations)} "
+        f"ticker_snapshots_created={summary.ticker_snapshots_created} "
+        f"ticker_snapshots_reused={summary.ticker_snapshots_reused} "
+        f"paid_units={consumed} network_attempts={attempts} quota_remaining={remaining}"
+    )
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
@@ -224,6 +270,8 @@ def main() -> int:
         return asyncio.run(run_archive_mag7_daily())
     if args.command == "backfill-mag7-radar":
         return asyncio.run(run_backfill_mag7_radar())
+    if args.command == "refresh-phase2b-context":
+        return asyncio.run(run_phase2b_context(args.contract, force=args.force))
     return 1
 
 

@@ -676,6 +676,68 @@ class OiConfirmationEvent(Base):
     specification_version: Mapped[str] = mapped_column(String(64))
 
 
+class Phase2bTickerContextSnapshot(Base):
+    """Immutable shared ticker evidence used by one or more candidate evaluations."""
+
+    __tablename__ = "phase2b_ticker_context_snapshots"
+    __table_args__ = (
+        Index("ix_phase2b_ticker_context_ticker_created", "ticker", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    stock_state: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    price_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    iv_rank: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    term_structure: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    dealer_heatmap: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_timestamps: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    raw_payload_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    endpoint_statuses: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class Phase2bCandidateEvaluation(Base):
+    """Append-only context bound to one selected Phase 2A candidate."""
+
+    __tablename__ = "phase2b_candidate_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker_context_id", "contract_symbol", name="uq_phase2b_context_contract"
+        ),
+        Index("ix_phase2b_candidate_symbol_evaluated", "contract_symbol", "evaluated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ticker_context_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("phase2b_ticker_context_snapshots.id"), nullable=False
+    )
+    contract_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    expiration: Mapped[date] = mapped_column(Date, nullable=False)
+    right: Mapped[str] = mapped_column(String(1), nullable=False)
+    strike: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    dte_at_detection: Mapped[int | None] = mapped_column(Integer)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    trigger_sources: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    phase2a_evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    strike_location: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    volatility_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    dealer_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    execution_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    evidence_states: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_timestamps: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class SignalDetection(Base):
     """Future detection record: detection fields are append-only historical facts."""
 
