@@ -373,7 +373,19 @@ async def run_dealer_gex_archive(
             f"vendor_observed_at={row.get('vendor_observed_at')} "
             f"expirations={row.get('expirations')} cells={row.get('cells')}"
         )
-    return 0 if summary.status in {"COMPLETE", "DRY_RUN_READY"} else 4
+    return dealer_gex_archive_exit_code(summary.status)
+
+
+def dealer_gex_archive_exit_code(status: str) -> int:
+    """Map archive outcomes to scheduler-safe process exit codes."""
+
+    successful_outcomes = {
+        "COMPLETE",
+        "DRY_RUN_READY",
+        "SKIPPED_NON_TRADING_SESSION",
+        "SKIPPED_TARGET_AFTER_EARLY_CLOSE",
+    }
+    return 0 if status in successful_outcomes else 4
 
 
 def main() -> int:

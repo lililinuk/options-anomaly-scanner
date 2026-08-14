@@ -1,0 +1,60 @@
+name: Dealer GEX Daily Archive
+
+on:
+  schedule:
+    - cron: "30 15 * * 1-5"
+      timezone: "America/New_York"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dealer-gex-daily-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      NIGHTWATCH_API_KEY: ${{ secrets.NIGHTWATCH_API_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Validate required configuration
+        shell: bash
+        run: |
+          missing=()
+          if [[ -z "${DATABASE_URL:-}" ]]; then
+            missing+=("DATABASE_URL")
+          fi
+          if [[ -z "${NIGHTWATCH_API_KEY:-}" ]]; then
+            missing+=("NIGHTWATCH_API_KEY")
+          fi
+          if (( ${#missing[@]} > 0 )); then
+            for name in "${missing[@]}"; do
+              echo "CONFIGURATION_ERROR: required secret/environment variable ${name} is not configured"
+            done
+            exit 2
+          fi
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Capture scheduled Dealer/GEX archive
+        run: python -m app.cli capture-dealer-gex-archive --scheduled

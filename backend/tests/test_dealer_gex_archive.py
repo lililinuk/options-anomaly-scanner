@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.cli import dealer_gex_archive_exit_code
 from app.confirmation.workspace_v3 import build_workspace_payload
 from app.db.models import (
     DealerGexArchiveRun,
@@ -27,6 +28,24 @@ from app.nightwatch.errors import NightwatchError
 from app.nightwatch.models import ApiUsageEvent
 
 UTC = timezone.utc
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_exit_code"),
+    [
+        ("COMPLETE", 0),
+        ("DRY_RUN_READY", 0),
+        ("SKIPPED_NON_TRADING_SESSION", 0),
+        ("SKIPPED_TARGET_AFTER_EARLY_CLOSE", 0),
+        ("PARTIAL", 4),
+        ("EMPTY", 4),
+        ("SKIPPED_DISABLED", 4),
+    ],
+)
+def test_dealer_archive_exit_code_preserves_scheduler_observability(
+    status: str, expected_exit_code: int
+) -> None:
+    assert dealer_gex_archive_exit_code(status) == expected_exit_code
 
 
 def _payload(*, truncated: bool = False, generated_at: str = "2026-08-14T19:30:00Z") -> dict:
