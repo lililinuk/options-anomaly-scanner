@@ -24,6 +24,7 @@ from app.confirmation.domain import (
     strike_location,
 )
 from app.confirmation.state_v2 import latest_v2_state
+from app.confirmation.workspace_v3 import latest_v3_workspace
 from app.core.time import utc_now
 from app.db.models import (
     ContractOiDailySnapshot,
@@ -481,6 +482,9 @@ def latest_candidate_context(session: Session, contract_symbol: str) -> dict[str
         "config_version": evaluation.config_version,
         "evaluated_at": evaluation.evaluated_at.isoformat(),
         "v2_state": latest_v2_state(
+            session, contract_symbol, candidate_evaluation_id=evaluation.id
+        ),
+        "v3_research_workspace": latest_v3_workspace(
             session, contract_symbol, candidate_evaluation_id=evaluation.id
         ),
         "deferred": {"iv_vs_rv": "NOT_IMPLEMENTED", "skew": "NOT_IMPLEMENTED",

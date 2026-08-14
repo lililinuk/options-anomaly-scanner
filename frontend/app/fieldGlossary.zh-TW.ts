@@ -131,6 +131,18 @@ export const fieldGlossary = {
   research_readiness: entry("研究準備度", "Research Readiness", "六層 context 是否具備可追溯研究資料的 checklist。", "缺失或 degraded 0 層為 COMPLETE、1 層為 PARTIAL、2 層以上為 LIMITED。", "用來指出還缺哪些資料層。", "不是 Tradeability、Conviction 或方向分數。"),
   direction_unresolved_v2: entry("方向未解析", "Direction UNRESOLVED", "Phase 2B v2 不從目前證據推論投資人方向。", "固定保存 UNRESOLVED。", "將資料狀態與金融方向嚴格分離。", "Call/Put、ΔOI、premium、price trend、IV topology 或 GEX 正負都不能單獨推出 bull/bear。"),
   expiry_only_research_row: entry("僅到期日研究列", "Expiry-only Research Row", "只有 expiry 層級 evidence、沒有精確合約身份的研究列。", "API 以 entity_type=EXPIRY_ONLY 明確標示。", "仍可顯示 expiry evidence。", "不得捏造 contract Greeks、execution、GEX cell 或 v2 contract state。"),
+  contract_premium_activity: entry("合約權利金活動", "Contract Premium Activity", "Radar observation 中供應商回報的該精確合約權利金活動。", "可彙總許多筆交易；需與同一 Radar observation 的 Volume、Trades 及時間一起閱讀。", "說明為何這張合約值得研究。", "不是單筆大單，也不能單獨辨識買／賣方發起、開／平倉或方向信念。"),
+  exact_contract_delta_oi: entry("精確合約 OI 變化", "Exact-contract ΔOI", "該合約兩個供應商 OI observations 之間的淨 Open Interest 變化。", "current OI 減 previous OI；保留 Radar observation date。", "正值表示淨 OI 增加、負值表示淨 OI 減少。", "不等同買進張數、看多開倉或看空開倉；也不能辨識交易經濟方向。"),
+  observed_flow_direction_v3: entry("觀察到的 Flow 方向", "Observed Flow Direction", "目前保存證據能否辨識原始活動的經濟方向。", "Phase 2B v3 保留 UNRESOLVED，並提供來源與原因 audit。", "防止把 Call、正 ΔOI 或大額 Premium 誤讀成 bullish Call buying。", "UNRESOLVED 不是 Neutral；可能包含 seller initiation、spread、hedge 或其他多腿結構。"),
+  underlying_price_trend_v3: entry("標的價格趨勢", "Underlying Price Trend", "沿用已接受的 regular-session close、SMA20、SMA50 所形成之 UPTREND、DOWNTREND、MIXED 或 UNKNOWN。", "保留 close、SMA、1D／5D／20D returns、ATR 與資料品質以供稽核。", "描述目前標的價格結構。", "不是 BUY／SELL，也不代表應跟隨該 option activity。"),
+  anchor_expiry_v3: entry("錨定到期日", "Anchor Expiry", "精確候選合約本身的 expiration。", "Dealer/GEX 主要結構只使用此到期日的完整可用 strike ladder。", "確保不同 expiration 的相同 strike 不會被混合。", "相鄰 expiry 只提供次要 context，不會改寫 Anchor Floor。"),
+  primary_floor_v3: entry("主要正 GEX 下方節點", "Primary Floor", "在候選合約的 Anchor Expiry 中，位於現貨下方且正 net GEX 最大的履約價節點。", "只比較 strike < spot 且 net GEX > 0 的可用 cells，選 maximum positive net GEX；沒有符合者即為 NULL。", "是一個 Dealer/GEX 結構位置，可用於條件式 path 研究。", "不保證支撐、不是直接買入訊號，也不使用 absolute GEX 或負 GEX 節點。"),
+  primary_upper_node_v3: entry("主要上方正 GEX 節點", "Primary Upper Positive-GEX Node", "在 Anchor Expiry 中，位於現貨上方且正 net GEX 最大的履約價節點。", "只比較 strike > spot 且 net GEX > 0 的可用 cells。", "標示重要的上方 Dealer/GEX 結構節點。", "不自動稱為阻力或天花板，也不是交易方向。"),
+  immediate_below_floor_v3: entry("Floor 緊鄰下方節點", "Immediate Below-Floor Node", "Anchor Expiry 可用 cells 中，嚴格低於 Primary Floor 的最高履約價。", "保留 strike、net GEX、符號、距 Floor 與距 spot。", "用來描述 Floor 若失守後首先進入的局部 GEX 區域。", "緊鄰節點為負不代表更下方沒有其他正 GEX 節點。"),
+  stabilization_bias_v3: entry("穩定化傾向", "Stabilization Bias", "當 spot 位於正 GEX Primary Floor 上方時的條件式結構描述。", "只在已辨識正 GEX Floor 且 spot > Floor 時顯示。", "表示 Floor 在價格仍位於其上時是穩定／support-like 的結構區域。", "不保證支撐、不預測上漲、不是買入建議。"),
+  downside_acceleration_risk_v3: entry("下行放大風險", "Downside Acceleration Risk", "當 Primary Floor 緊鄰下方是負 GEX 節點時，Floor 跌破後的條件式路徑風險。", "positive Floor + immediate lower node net GEX < 0 才成立。", "表示若價格跌破 Floor，會直接進入較可能放大既有下跌波動的 Dealer/GEX 區域。", "這是條件式風險描述，不代表價格一定跌破、崩跌或延續下行。"),
+  adjacent_expiry_context_v3: entry("相鄰到期日背景", "Adjacent Expiry Context", "在 Primary Floor strike 檢查最近前一個與最近後一個可用 expiration 的 net GEX。", "只使用 previous + anchor + next，分類 ALIGNED、PARTIALLY_ALIGNED、MIXED、NOT_ALIGNED 或 UNAVAILABLE。", "提供輕量的跨 expiry 次要背景，raw values 可展開稽核。", "不計分、不建立方向，也不定義或否決 Anchor Primary Floor。"),
+  dealer_source_quality_v3: entry("Dealer 來源品質", "Dealer Source Quality", "保存 Dealer heatmap 的 AVAILABLE、AVAILABLE_DEGRADED、INCOMPLETE_OR_TRUNCATED 或 UNAVAILABLE 狀態。", "只有可用來源才建立 GEX structure；數值零仍是實際零，缺失則維持 NULL。", "讓使用者判斷 derived structure 的來源條件。", "不得從不可用或截斷資料製造 Floor、Upper Node 或零 GEX。"),
 } satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryKey = keyof typeof fieldGlossary;
@@ -145,4 +157,9 @@ export const visibleAnalyticalColumns = [
   "phase2b_research_state", "positioning_evidence_breadth", "term_topology",
   "candidate_gex_sign", "research_readiness", "direction_unresolved_v2",
   "expiry_only_research_row",
+  "contract_premium_activity", "exact_contract_delta_oi", "observed_flow_direction_v3",
+  "underlying_price_trend_v3", "anchor_expiry_v3", "primary_floor_v3",
+  "primary_upper_node_v3", "immediate_below_floor_v3", "stabilization_bias_v3",
+  "downside_acceleration_risk_v3", "adjacent_expiry_context_v3",
+  "dealer_source_quality_v3",
 ] as const satisfies readonly GlossaryKey[];

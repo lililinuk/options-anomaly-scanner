@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import get_settings
 from app.confirmation.service import Phase2bContextService
 from app.confirmation.state_v2 import Phase2bV2StateService
+from app.confirmation.workspace_v3 import Phase2bV3WorkspaceService
 from app.db.session import get_session_factory
 from app.metadata.service import ApiUsageCollector, refresh_metadata
 from app.nightwatch.client import NightwatchClient
@@ -59,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build append-only Phase 2B v2 research states from persisted evidence only",
     )
     phase2b_v2.add_argument("--contract", action="append", required=True)
+    phase2b_v3 = subcommands.add_parser(
+        "build-phase2b-v3-workspaces",
+        help="Build append-only Phase 2B v3 research workspaces from persisted evidence only",
+    )
+    phase2b_v3.add_argument("--contract", action="append", required=True)
     return parser
 
 
@@ -287,6 +293,21 @@ def run_phase2b_v2_states(contracts: list[str]) -> int:
     return 0 if not summary.missing else 4
 
 
+def run_phase2b_v3_workspaces(contracts: list[str]) -> int:
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            summary = Phase2bV3WorkspaceService(session).materialize_contracts(contracts)
+    except (SQLAlchemyError, RuntimeError) as error:
+        print(f"Phase 2B v3 workspace build failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    print(
+        f"Phase 2B v3 workspaces: created={summary.created} reused={summary.reused} "
+        f"missing={len(summary.missing)} network_attempts=0 paid_units=0"
+    )
+    return 0 if not summary.missing else 4
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
@@ -309,6 +330,8 @@ def main() -> int:
         )
     if args.command == "build-phase2b-v2-states":
         return run_phase2b_v2_states(args.contract)
+    if args.command == "build-phase2b-v3-workspaces":
+        return run_phase2b_v3_workspaces(args.contract)
     return 1
 
 

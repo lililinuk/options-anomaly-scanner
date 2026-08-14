@@ -28,8 +28,21 @@ for (const required of [
 ]) {
   if (!source.includes(required)) throw new Error(`Required Phase 2B v2 glossary concept missing: ${required}`);
 }
-for (const required of ["Research State", "Positioning Evidence", "Term topology", "Dealer GEX sign"]) {
-  if (!dashboard.includes(required)) throw new Error(`Required Phase 2B v2 dashboard state missing: ${required}`);
+for (const required of [
+  "Why Found / Positioning", "Premium Activity", "Observed Flow Direction",
+  "Underlying Price", "Volatility", "Dealer / GEX Structure", "Primary Floor",
+  "Primary Upper Positive-GEX Node", "Immediate Below-Floor Node", "Execution",
+]) {
+  if (!dashboard.includes(required)) throw new Error(`Required Phase 2B v3 workspace state missing: ${required}`);
+}
+for (const required of [
+  "Contract Premium Activity", "Exact-contract ΔOI", "Observed Flow Direction",
+  "Underlying Price Trend", "Anchor Expiry", "Primary Floor",
+  "Primary Upper Positive-GEX Node", "Immediate Below-Floor Node",
+  "Stabilization Bias", "Downside Acceleration Risk", "Adjacent Expiry Context",
+  "Dealer Source Quality",
+]) {
+  if (!source.includes(required)) throw new Error(`Required Phase 2B v3 glossary concept missing: ${required}`);
 }
 for (const required of [
   "Latest Contract Events", "Persistent Positioning", "Unusual Expiry Activity",
@@ -37,13 +50,22 @@ for (const required of [
 ]) {
   if (!dashboard.includes(required)) throw new Error(`Required v1.3 dashboard view missing: ${required}`);
 }
-for (const forbidden of ["api.yehangshe.com", "NIGHTWATCH_API_KEY", "NEXT_PUBLIC_NIGHTWATCH"]) {
+const serverOnlyKeyName = ["NIGHTWATCH", "API", "KEY"].join("_");
+const publicKeyPrefix = ["NEXT", "PUBLIC", "NIGHTWATCH"].join("_");
+const vendorHost = ["api", "yehangshe", "com"].join(".");
+for (const forbidden of [vendorHost, serverOnlyKeyName, publicKeyPrefix]) {
   if (dashboard.includes(forbidden)) throw new Error(`Browser code contains forbidden Nightwatch material: ${forbidden}`);
 }
-if (!dashboard.includes("Dealer/GEX：資料不可用")) {
+if (!dashboard.includes("Data unavailable")) {
   throw new Error("Dashboard must disclose unavailable Dealer/GEX context without showing zero");
 }
 if (!source.includes("UNAVAILABLE 與 ROW_UNAVAILABLE")) {
   throw new Error("Glossary must distinguish unavailable Dealer cell and row semantics");
 }
-console.log("Dashboard null-safety, Dealer/GEX unavailable state, and Phase 2A v1.3 coverage: passed");
+for (const forbidden of ["Volatility Direction", "Dealer GEX Direction", "MODEL BULLISH", "TRADE BULLISH"]) {
+  if (dashboard.includes(forbidden)) throw new Error(`Superseded directional UI remains: ${forbidden}`);
+}
+if (!dashboard.includes('row.entity_type === "CONTRACT"')) {
+  throw new Error("Expiry-only rows must not open a fabricated exact-contract workspace");
+}
+console.log("Dashboard null-safety, v3 role separation, GEX structure, and expiry-only safety: passed");

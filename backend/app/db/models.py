@@ -779,6 +779,54 @@ class Phase2bCandidateState(Base):
     readiness_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class Phase2bV3ResearchWorkspace(Base):
+    """Immutable v3 research workspace derived only from preserved evidence."""
+
+    __tablename__ = "phase2b_v3_research_workspaces"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_v2_state_id",
+            "specification_version",
+            name="uq_phase2b_v3_workspace_source_state_spec",
+        ),
+        Index(
+            "ix_phase2b_v3_workspace_symbol_created",
+            "contract_symbol",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    source_v2_state_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("phase2b_candidate_states.id"), nullable=False
+    )
+    candidate_evaluation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("phase2b_candidate_evaluations.id"), nullable=False
+    )
+    ticker_context_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("phase2b_ticker_context_snapshots.id"), nullable=False
+    )
+    contract_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    contract_identity: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    opportunity_positioning: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    underlying_price: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    volatility_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    dealer_gex_structure: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    execution_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_floor_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    primary_upper_node_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    below_floor_path_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    adjacent_expiry_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class SignalDetection(Base):
     """Future detection record: detection fields are append-only historical facts."""
 

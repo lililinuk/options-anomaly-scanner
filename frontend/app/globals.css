@@ -128,6 +128,7 @@ h1 { max-width: 720px; margin: 0; color: #122632; font-family: Georgia, "Times N
 .confirmation-workspace { padding: 22px; border-top: 1px solid var(--line); background: #f9fbfa; }
 .confirmation-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
 .confirmation-heading h3 { margin: 6px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 500; }
+.contract-subheading { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
 .direction-badge { padding: 8px 12px; color: #72541d; border: 1px solid #e4d2a9; border-radius: 999px; background: #fff9e9; font-size: 10px; font-weight: 800; letter-spacing: .04em; }
 .confirmation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .confirmation-grid article { min-width: 0; padding: 17px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
@@ -137,6 +138,13 @@ h1 { max-width: 720px; margin: 0; color: #122632; font-family: Georgia, "Times N
 .confirmation-grid dt { color: var(--faint); font-size: 9px; font-weight: 750; text-transform: uppercase; }
 .confirmation-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #344b55; font-size: 11px; }
 .confirmation-grid small, .ranked-rows { display: block; margin: 13px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.confirmation-grid .role-card { grid-column: 1 / -1; border-left: 3px solid var(--teal); background: #f4faf8; }
+.role-card h4 { margin: 4px 0 7px; }
+.role-card p { max-width: 760px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.role-number { color: var(--teal); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.compact-state { width: fit-content; margin: 0 0 12px; padding: 6px 9px; color: #72541d; border: 1px solid #e4d2a9; border-radius: 999px; background: #fff9e9; font-size: 10px; font-weight: 800; }
+.dealer-structure-card { grid-column: 1 / -1; }
+.dealer-structure-card pre { max-height: 260px; overflow: auto; padding: 10px; border-radius: 6px; color: #41545d; background: #f5f7f7; font-size: 9px; white-space: pre-wrap; }
 .data-warning { padding: 12px; color: #76551e; border-radius: 7px; background: #fff8e8; font-size: 11px; }
 .data-age-card { grid-column: 1 / -1; }
 .data-age-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }

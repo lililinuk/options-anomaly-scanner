@@ -79,6 +79,14 @@ Phase 2B v2 state materialization is documented in
 `docs/specifications/PHASE2B_V2_ORCHESTRATION.md`. It reads preserved evidence, never becomes part of
 the daily Nightwatch collection jobs, and does not change Phase 2A route selection.
 
+## Phase 2B v3 database-only research workspace
+
+Phase 2B v3 materialization is documented in
+`docs/specifications/PHASE2B_V3_ORCHESTRATION.md`. It is an idempotent PostgreSQL-only projection
+over a source-aligned v1 evaluation, v2 state, and preserved ticker Heatmap. It adds the versioned
+`v3_research_workspace` API property and cannot initiate Nightwatch transport or change Phase 2A
+route selection.
+
 ## Scheduling requirement
 
 Use a durable platform scheduler (cron, systemd timer, managed job scheduler, or equivalent) to run

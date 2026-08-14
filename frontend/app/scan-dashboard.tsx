@@ -115,6 +115,21 @@ type Phase2bContext = {
     direction: string;
     specification_version: string;
   } | null;
+  v3_research_workspace: {
+    specification_version: string;
+    contract_identity: Record<string, unknown>;
+    opportunity_positioning: Record<string, unknown>;
+    underlying_price: Record<string, unknown>;
+    trade_structure: {
+      volatility: Record<string, unknown>;
+      dealer_gex: Record<string, unknown>;
+      execution: Record<string, unknown>;
+    };
+    provenance: Record<string, unknown>;
+    rule_versions: Record<string, unknown>;
+    config_version: string;
+    created_at: string;
+  } | null;
 };
 
 type Payload = {
@@ -260,7 +275,7 @@ export function ScanDashboard() {
       <section className="panel results-panel" aria-labelledby="deep-title">
         <div className="panel-header"><div><span className="eyebrow">Research workspace</span><h2 id="deep-title">Deep Dive / Research Candidates</h2></div><small>No universal conviction score</small></div>
         <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract / Expiry</th><th>Trigger Sources</th><th>Radar Premium / ΔOI</th><th>Persistent</th><th>Expiry Activity</th><th>Structure</th><th>Archive</th><th>Flags</th></tr></thead>
-          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{/^[A-Z0-9]{1,32}$/.test(row.contract_or_expiry) ? <button className="context-link" type="button" onClick={() => void openContext(row.contract_or_expiry)}>{row.contract_or_expiry}</button> : row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>No route-qualified research candidate is available yet.</td></tr>}</tbody>
+          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{row.entity_type === "CONTRACT" ? <button className="context-link" type="button" onClick={() => void openContext(row.contract_or_expiry)}>{row.contract_or_expiry}</button> : row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>No route-qualified research candidate is available yet.</td></tr>}</tbody>
         </table></div>
         {contextMessage && <p className="context-message" role="status">{contextMessage}</p>}
         {context && <ConfirmationContext context={context} />}
@@ -276,37 +291,52 @@ function value(source: Record<string, unknown>, key: string): string {
 }
 
 function ConfirmationContext({ context }: { context: Phase2bContext }) {
-  const stock = context.price.stock_state;
-  const history = context.price.history;
-  const location = context.price.strike_location;
-  const ivRank = context.volatility.iv_rank;
-  const term = context.volatility.term;
-  const candidateNode = (term.candidate_node ?? {}) as Record<string, unknown>;
-  const shorter = (term.nearest_shorter_node ?? {}) as Record<string, unknown>;
-  const longer = (term.nearest_longer_node ?? {}) as Record<string, unknown>;
-  const cell = (context.dealer.candidate_cell ?? {}) as Record<string, unknown>;
-  const row = (context.dealer.candidate_row_stack ?? {}) as Record<string, unknown>;
-  const ranked = Array.isArray(context.dealer.top_vendor_ranked_rows)
-    ? context.dealer.top_vendor_ranked_rows as Record<string, unknown>[] : [];
-  const dealerUnavailable = context.dealer.availability === "UNAVAILABLE";
-  const state = context.v2_state;
-  const positioning = state?.positioning ?? {};
-  const readiness = state?.research_readiness ?? {};
-  const v2Volatility = state?.volatility ?? {};
-  const v2Dealer = state?.dealer_gex ?? {};
+  const workspace = context.v3_research_workspace;
+  if (!workspace) {
+    return <div className="confirmation-workspace" aria-label="Phase 2B confirmation context">
+      <div className="confirmation-heading"><div><span className="eyebrow">Phase 2B · Preserved evidence</span><h3>{context.candidate.contract_symbol}</h3></div></div>
+      <p className="context-message" role="status">The v3 research workspace has not been materialized for this exact contract. No contract-level evidence is fabricated.</p>
+    </div>;
+  }
+  const identity = workspace.contract_identity;
+  const opportunity = workspace.opportunity_positioning;
+  const activity = (opportunity.contract_activity ?? {}) as Record<string, unknown>;
+  const openInterest = (opportunity.open_interest ?? {}) as Record<string, unknown>;
+  const positioning = (opportunity.positioning_evidence ?? {}) as Record<string, unknown>;
   const presence = (positioning.presence_states ?? {}) as Record<string, unknown>;
+  const flow = (opportunity.observed_flow_direction ?? {}) as Record<string, unknown>;
+  const price = workspace.underlying_price;
+  const priceAudit = (price.audit ?? {}) as Record<string, unknown>;
+  const priceAuditFields = (priceAudit.source_fields ?? {}) as Record<string, unknown>;
+  const volatility = workspace.trade_structure.volatility;
+  const dealer = workspace.trade_structure.dealer_gex;
+  const execution = workspace.trade_structure.execution;
+  const floor = (dealer.primary_floor ?? {}) as Record<string, unknown>;
+  const upper = (dealer.primary_upper_positive_gex_node ?? {}) as Record<string, unknown>;
+  const lower = (dealer.immediate_below_floor_node ?? {}) as Record<string, unknown>;
+  const adjacent = (dealer.adjacent_expiry_context ?? {}) as Record<string, unknown>;
+  const previous = (adjacent.previous ?? {}) as Record<string, unknown>;
+  const anchor = (adjacent.anchor ?? {}) as Record<string, unknown>;
+  const next = (adjacent.next ?? {}) as Record<string, unknown>;
+  const audit = (dealer.audit ?? {}) as Record<string, unknown>;
+  const sourceTimestamps = (workspace.provenance.source_timestamps ?? {}) as Record<string, unknown>;
+  const rightLabel = value(identity, "right_label");
+  const dealerUnavailable = dealer.availability !== "AVAILABLE";
   return <div className="confirmation-workspace" aria-label="Phase 2B confirmation context">
-    <div className="confirmation-heading"><div><span className="eyebrow">Phase 2B · Context only</span><h3>{context.candidate.ticker} · {context.candidate.contract_symbol}</h3></div><span className="direction-badge">Direction: {context.candidate.direction}</span></div>
+    <div className="confirmation-heading"><div><span className="eyebrow">Phase 2B v3 · Candidate research workspace</span><h3>{value(identity, "ticker")} {value(identity, "expiration")} ${value(identity, "strike")} {rightLabel}</h3><p className="contract-subheading">DTE at Detection: {value(identity, "dte_at_detection")} · Bucket: {value(identity, "bucket_at_detection")} · {value(identity, "contract_symbol")}</p></div></div>
     <div className="confirmation-grid">
-      <ContextCard title="Research State" rows={[["Readiness", value(readiness, "state")], ["Missing / degraded layers", value(readiness, "missing_or_degraded_count")], ["Positioning breadth", value(positioning, "evidence_breadth")], ["Evidence family count", value(positioning, "evidence_family_count")], ["Price trend", value(state?.price ?? {}, "trend")], ["Term topology", value(v2Volatility, "topology")], ["Dealer GEX sign", value(v2Dealer, "sign")], ["Direction", state?.direction ?? "UNRESOLVED"]]} />
-      <ContextCard title="Positioning Evidence" rows={[["Radar", value(presence, "radar_event")], ["Contract persistence", value(presence, "contract_persistence")], ["Expiry persistence", value(presence, "expiry_persistence")], ["Structure", value(presence, "structure")], ["Exact cluster membership", value(presence, "cluster")]]} />
-      <ContextCard title="Candidate Summary" rows={[["Expiry / DTE", `${context.candidate.expiration} / ${display(context.candidate.dte)}`], ["Right / Strike", `${context.candidate.right} / ${display(context.candidate.strike)}`], ["Current price", value(stock, "current_price_usd")], ["Triggers", context.candidate.trigger_sources.join(", ")], ["Archive", value(context.phase2a, "archive_completeness")]]} />
-      <ContextCard title="Why It Was Found" rows={[["Radar event", value(context.phase2a, "radar_material_event")], ["Premium", money(typeof context.phase2a.premium_usd === "number" ? context.phase2a.premium_usd : null)], ["ΔOI", value(context.phase2a, "oi_diff")], ["Structure", value(context.phase2a, "structure_score")], ["Persistence", value(context.phase2a, "contract_persistence")]]} />
-      <article><h4>Price Context</h4><dl><div><dt>Current Stock State</dt><dd>{value(stock, "current_price_usd")} · {value(stock, "session")}</dd></div><div><dt>Stock State as-of</dt><dd>{value(stock, "as_of")}</dd></div><div><dt>Latest Regular Close</dt><dd>{value(history, "latest_regular_close_usd")} · {value(history, "latest_valid_regular_date")}</dd></div><div><dt>Strike location / distance</dt><dd>{value(location, "state")} · {percent(typeof location.strike_distance_pct === "number" ? location.strike_distance_pct : null)}</dd></div><div><dt>1D / 5D / 20D</dt><dd>{percent(typeof history.return_1d === "number" ? history.return_1d : null)} / {percent(typeof history.return_5d === "number" ? history.return_5d : null)} / {percent(typeof history.return_20d === "number" ? history.return_20d : null)}</dd></div><div><dt>SMA20 / SMA50</dt><dd>{value(history, "sma_20")} / {value(history, "sma_50")}</dd></div><div><dt>Distance to SMA20 / SMA50</dt><dd>{percent(typeof history.distance_to_sma20_pct === "number" ? history.distance_to_sma20_pct : null)} / {percent(typeof history.distance_to_sma50_pct === "number" ? history.distance_to_sma50_pct : null)}</dd></div><div><dt>20-session high / low</dt><dd>{value(history, "rolling_high_20")} / {value(history, "rolling_low_20")}</dd></div><div><dt>Trend / ATR14</dt><dd>{value(history, "trend")} / {value(history, "atr_14")}</dd></div><div><dt>Strike distance ATR</dt><dd>{value(location, "strike_distance_atr")}</dd></div><div><dt>Coverage</dt><dd>{value(history, "coverage_quality")} · valid {value(history, "valid_regular_session_count")} · gaps {String((typeof history.missing_regular_date_count === "number" ? history.missing_regular_date_count : 0) + (typeof history.ambiguous_regular_date_count === "number" ? history.ambiguous_regular_date_count : 0))}</dd></div></dl><details><summary>Price data quality details</summary><p>Policy: {value(history, "daily_session_policy")}</p><p>Missing regular dates: {Array.isArray(history.missing_regular_dates) && history.missing_regular_dates.length ? history.missing_regular_dates.join(", ") : "—"}</p><p>Ambiguous regular dates: {Array.isArray(history.ambiguous_regular_dates) && history.ambiguous_regular_dates.length ? history.ambiguous_regular_dates.join(", ") : "—"}</p></details><small>OHLC split-adjustment semantics are not confirmed ({value(history, "price_adjustment_semantics")}).</small></article>
-      <ContextCard title="Volatility Context" rows={[["Contract IV", value(term, "contract_iv")], ["Ticker IV Rank", value(ivRank, "value")], ["Expiry term IV", value(candidateNode, "implied_vol_pct")], ["Implied move", percent(typeof candidateNode.implied_move_pct === "number" ? candidateNode.implied_move_pct : null)], ["Shorter / longer IV", `${value(shorter, "implied_vol_pct")} / ${value(longer, "implied_vol_pct")}`], ["Exact match", value(term, "exact_match_status")]]} />
-      <article><h4>Dealer / GEX Context</h4>{dealerUnavailable ? <><p className="context-message" role="status">Dealer/GEX：資料不可用</p><dl><div><dt>Availability</dt><dd>UNAVAILABLE</dd></div><div><dt>Candidate cell</dt><dd>UNAVAILABLE</dd></div><div><dt>Row stack</dt><dd>ROW_UNAVAILABLE</dd></div></dl></> : <><dl><div><dt>Quality / state</dt><dd>{value(context.dealer, "quality")} / {value(context.dealer, "vendor_state")}</dd></div><div><dt>Generated</dt><dd>{value(context.dealer, "generated_at")}</dd></div><div><dt>Candidate cell</dt><dd>{value(context.dealer, "candidate_heatmap_cell_status")}</dd></div><div><dt>Cell net / call / put</dt><dd>{value(cell, "net_dealer_gex_usd")} / {value(cell, "call_gex_usd")} / {value(cell, "put_gex_usd")}</dd></div><div><dt>Row net / abs / rank</dt><dd>{value(row, "row_net_wall_gex_usd")} / {value(row, "row_abs_wall_gex_usd")} / {value(row, "rank")}</dd></div></dl>{ranked.length > 0 && <p className="ranked-rows">Top vendor rows: {ranked.map((item) => `${value(item, "strike_usd")} (#${value(item, "rank")})`).join(" · ")}</p>}</>}</article>
-      <ContextCard title="Liquidity / Greeks" rows={[["Bid / ask / mid", `${value(context.execution, "bid")} / ${value(context.execution, "ask")} / ${value(context.execution, "mid")}`], ["Spread USD / %", `${value(context.execution, "spread_usd")} / ${percent(typeof context.execution.spread_pct === "number" ? context.execution.spread_pct : null)}`], ["Delta / gamma", `${value(context.execution, "delta")} / ${value(context.execution, "gamma")}`], ["Theta / vega / charm", `${value(context.execution, "theta")} / ${value(context.execution, "vega")} / ${value(context.execution, "charm")}`]]} />
-      <article className="data-age-card"><h4>Data Quality / Timestamps</h4><dl>{Object.entries(context.timestamps).map(([key, item]) => <div key={key}><dt>{key}</dt><dd>{display(typeof item === "string" ? item : null)}</dd></div>)}</dl><small>{context.specification_version} · config {context.config_version}</small></article>
+      <article className="role-card"><span className="role-number">Role 1</span><h4>Why Found / Positioning</h4><p>Why this exact contract is worth investigating. This evidence does not establish underlying direction or buyer/seller initiation.</p></article>
+      <ContextCard title="Contract Activity" rows={[["Premium Activity", money(typeof activity.premium_activity_usd === "number" ? activity.premium_activity_usd : null)], ["Volume", value(activity, "volume")], ["Trades", value(activity, "trades")], ["Radar observation", value(activity, "radar_observation_date")]]} />
+      <ContextCard title="Open Interest" rows={[["ΔOI", value(openInterest, "delta_oi")], ["Relative OI change", percent(typeof openInterest.relative_oi_change === "number" ? openInterest.relative_oi_change : null)], ["Current OI", value(openInterest, "current_oi")], ["Radar observation", value(openInterest, "radar_observation_date")], ["Chain observation", value(openInterest, "chain_observation_date")]]} />
+      <article><h4>Positioning Evidence</h4><dl><div><dt>Radar Event</dt><dd>{value(presence, "radar_event")}</dd></div><div><dt>Evidence Breadth</dt><dd>{value(positioning, "evidence_breadth")}</dd></div><div><dt>Contract Structure</dt><dd>{value(positioning, "structure_score")}</dd></div><div><dt>Contract Persistence</dt><dd>{value(presence, "contract_persistence")}</dd></div><div><dt>Expiry Persistence</dt><dd>{value(presence, "expiry_persistence")}</dd></div><div><dt>Cluster</dt><dd>{value(presence, "cluster")}</dd></div></dl></article>
+      <article><h4>Observed Flow Direction</h4><p className="compact-state">{value(flow, "state")}</p><details><summary>Why?</summary><p>Current persisted evidence does not establish buyer/seller initiation, opening/closing intent, a spread, a hedge, or another multi-leg structure. UNRESOLVED is not Neutral.</p><small>{value(flow, "reason")}</small></details></article>
+      <article className="role-card"><span className="role-number">Role 2</span><h4>Underlying Price</h4><p>Accepted factual price structure. It is market context, not a BUY/SELL or option recommendation.</p></article>
+      <article><h4>Underlying Price</h4><dl><div><dt>Trend</dt><dd><strong>{value(price, "trend")}</strong></dd></div><div><dt>Latest Regular Close</dt><dd>{value(price, "latest_regular_close_usd")}</dd></div><div><dt>SMA20 / SMA50</dt><dd>{value(price, "sma_20")} / {value(price, "sma_50")}</dd></div><div><dt>1D / 5D / 20D</dt><dd>{percent(typeof price.return_1d === "number" ? price.return_1d : null)} / {percent(typeof price.return_5d === "number" ? price.return_5d : null)} / {percent(typeof price.return_20d === "number" ? price.return_20d : null)}</dd></div><div><dt>ATR14</dt><dd>{value(price, "atr_14")}</dd></div><div><dt>Price Quality</dt><dd>{value(price, "availability")} · {value(price, "coverage_quality")}</dd></div></dl><details><summary>View price audit</summary><p>Accepted state: {value(priceAudit, "accepted_state")}</p><p>Close &gt; SMA20: {value(priceAuditFields, "close_gt_sma20")} · SMA20 &gt; SMA50: {value(priceAuditFields, "sma20_gt_sma50")}</p><p>Rule: {value(priceAudit, "rule")}</p></details></article>
+      <article className="role-card"><span className="role-number">Role 3</span><h4>Trade-Structure / Path Context</h4><p>Volatility, Dealer/GEX structure, and execution evidence describe environment and path—not trade direction.</p></article>
+      <article><h4>Volatility</h4><dl><div><dt>IV Rank</dt><dd>{value(volatility, "iv_rank")}</dd></div><div><dt>Candidate IV</dt><dd>{percent(typeof volatility.candidate_iv === "number" ? volatility.candidate_iv : null)}</dd></div><div><dt>Term Structure</dt><dd>{value(volatility, "topology")}</dd></div><div><dt>Implied Move</dt><dd>{percent(typeof volatility.implied_move_pct === "number" ? volatility.implied_move_pct : null)} · {value(volatility, "implied_move_usd")}</dd></div><div><dt>Shorter / Longer IV</dt><dd>{percent(typeof volatility.shorter_iv === "number" ? volatility.shorter_iv : null)} / {percent(typeof volatility.longer_iv === "number" ? volatility.longer_iv : null)}</dd></div><div><dt>Term availability</dt><dd>{value(volatility, "term_availability")} · {value(volatility, "exact_match_status")}</dd></div></dl><details><summary>View volatility details</summary><p>Candidate minus shorter / longer / neighbor mean: {value(volatility, "candidate_iv_minus_shorter")} / {value(volatility, "candidate_iv_minus_longer")} / {value(volatility, "candidate_iv_minus_neighbor_mean")}</p><p>Term as-of: {value(volatility, "term_as_of")} · IV Rank as-of: {value(volatility, "iv_rank_as_of")}</p></details></article>
+      <article className="dealer-structure-card"><h4>Dealer / GEX Structure</h4>{dealerUnavailable ? <><p className="context-message" role="status">Data unavailable</p><dl><div><dt>Source Quality</dt><dd>{value(dealer, "source_quality")}</dd></div><div><dt>Primary Floor</dt><dd>—</dd></div><div><dt>Primary Upper Node</dt><dd>—</dd></div><div><dt>Break Risk</dt><dd>UNAVAILABLE</dd></div><div><dt>Adjacent Expiry</dt><dd>UNAVAILABLE</dd></div></dl></> : <><dl><div><dt>Anchor Expiry</dt><dd>{value(dealer, "anchor_expiry")}</dd></div><div><dt>Spot</dt><dd>{value(dealer, "spot_usd")}</dd></div><div><dt>Primary Floor</dt><dd>{value(floor, "strike_usd")} · GEX {value(floor, "net_dealer_gex_usd")}</dd></div><div><dt>Primary Upper Positive-GEX Node</dt><dd>{value(upper, "strike_usd")} · GEX {value(upper, "net_dealer_gex_usd")}</dd></div><div><dt>Immediate Below-Floor Node</dt><dd>{value(lower, "strike_usd")} · GEX {value(lower, "net_dealer_gex_usd")}</dd></div><div><dt>If Floor Holds</dt><dd>{value(dealer, "floor_hold_condition")}</dd></div><div><dt>If Floor Breaks</dt><dd>{value(dealer, "floor_break_condition")}</dd></div><div><dt>Adjacent Expiry Context</dt><dd>{value(adjacent, "state")}</dd></div><div><dt>Source Quality</dt><dd>{value(dealer, "source_quality")}</dd></div></dl><details><summary>View GEX audit</summary><p>Previous / Anchor / Next: {value(previous, "expiration")} {value(previous, "net_dealer_gex_usd")} · {value(anchor, "expiration")} {value(anchor, "net_dealer_gex_usd")} · {value(next, "expiration")} {value(next, "net_dealer_gex_usd")}</p><p>Source timestamp: {value(dealer, "source_timestamp")}</p><p>Rule versions: {Object.values(workspace.rule_versions).join(" · ")}</p><pre>{JSON.stringify(audit, null, 2)}</pre></details></>}</article>
+      <ContextCard title="Execution" rows={[["Bid / Ask / Mid", `${value(execution, "bid")} / ${value(execution, "ask")} / ${value(execution, "mid")}`], ["Spread USD / %", `${value(execution, "spread_usd")} / ${percent(typeof execution.spread_pct === "number" ? execution.spread_pct : null)}`], ["Open Interest", value(execution, "open_interest")], ["Delta / Gamma", `${value(execution, "delta")} / ${value(execution, "gamma")}`], ["Theta / Vega / Charm", `${value(execution, "theta")} / ${value(execution, "vega")} / ${value(execution, "charm")}`], ["Liquidity", value(execution, "accepted_liquidity_component")]]} />
+      <article className="data-age-card"><h4>Data / Provenance</h4><dl>{Object.entries(sourceTimestamps).map(([key, item]) => <div key={key}><dt>{key}</dt><dd>{display(typeof item === "string" ? item : null)}</dd></div>)}</dl><small>{workspace.specification_version} · config {workspace.config_version} · built {display(workspace.created_at)}</small></article>
     </div>
   </div>;
 }

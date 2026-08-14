@@ -145,3 +145,10 @@ A later scheduler will enqueue idempotent scan runs from configurable US-market-
 - expose run state through FastAPI.
 
 No scheduler, production polling, or deployment topology is implemented in Phase 1.
+# Phase 2B v3 research projection
+
+The Phase 2B v3 workspace is a read/derive/persist layer over immutable v1/v2 evidence. The
+transport layer is not imported by `app.confirmation.workspace_v3`; the CLI reads PostgreSQL only.
+Normalized GEX structural results reference the existing ticker context and raw evidence IDs rather
+than duplicating the full vendor payload. FastAPI exposes the result additively, and the Next.js
+browser surface uses only the fixed backend proxy.
