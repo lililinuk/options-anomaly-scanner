@@ -1,9 +1,11 @@
 from datetime import date
 from decimal import Decimal
 from inspect import getsource
+from types import SimpleNamespace
 
 import pytest
 
+from app.api.routes.scans import _deep_dive_public
 from app.scanner.daily import daily_pipeline_status, missing_coverage_tickers
 from app.scanner.v13 import (
     RadarThresholdProfile,
@@ -159,3 +161,30 @@ def test_daily_backfill_and_subjob_truth() -> None:
     assert daily_pipeline_status(["COMPLETE", "FAILED", "COMPLETE"]) == "PARTIAL"
     assert daily_pipeline_status(["FAILED", "FAILED", "FAILED"]) == "FAILED"
     assert daily_pipeline_status(["COMPLETE", "NO_NEW_DATA", "COMPLETE"]) == "COMPLETE"
+
+
+def test_expiry_only_deep_dive_row_is_explicit_and_has_no_contract_state() -> None:
+    expiry = SimpleNamespace(
+        deep_dive_eligible=True,
+        ticker="MSFT",
+        expiration=date(2026, 8, 21),
+        trigger_sources=["EXPIRY_ACTIVITY"],
+        persistent_positioning_score=None,
+        same_day_activity_score=Decimal("72"),
+        selected_for_deep_scan=False,
+    )
+    result = _deep_dive_public([], [], [expiry])
+    assert result == [{
+        "entity_type": "EXPIRY_ONLY",
+        "ticker": "MSFT",
+        "contract_or_expiry": "2026-08-21",
+        "expiration": "2026-08-21",
+        "trigger_sources": ["EXPIRY_ACTIVITY"],
+        "radar_premium_usd": None,
+        "radar_oi_diff": None,
+        "persistent_score": None,
+        "expiry_activity_score": 72.0,
+        "structure_score": None,
+        "archive_completeness": "NOT_LOADED",
+        "risk_flags": [],
+    }]

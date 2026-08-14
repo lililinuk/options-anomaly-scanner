@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import get_settings
 from app.confirmation.service import Phase2bContextService
+from app.confirmation.state_v2 import Phase2bV2StateService
 from app.db.session import get_session_factory
 from app.metadata.service import ApiUsageCollector, refresh_metadata
 from app.nightwatch.client import NightwatchClient
@@ -53,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Append current-spec normalization from preserved raw ticker context when available",
     )
+    phase2b_v2 = subcommands.add_parser(
+        "build-phase2b-v2-states",
+        help="Build append-only Phase 2B v2 research states from persisted evidence only",
+    )
+    phase2b_v2.add_argument("--contract", action="append", required=True)
     return parser
 
 
@@ -266,6 +272,21 @@ async def run_phase2b_context(
     return 0
 
 
+def run_phase2b_v2_states(contracts: list[str]) -> int:
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            summary = Phase2bV2StateService(session).materialize_contracts(contracts)
+    except (SQLAlchemyError, RuntimeError) as error:
+        print(f"Phase 2B v2 state build failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    print(
+        f"Phase 2B v2 states: created={summary.created} reused={summary.reused} "
+        f"missing={len(summary.missing)} network_attempts=0 paid_units=0"
+    )
+    return 0 if not summary.missing else 4
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
@@ -286,6 +307,8 @@ def main() -> int:
                 reuse_latest_raw=args.reuse_latest_raw,
             )
         )
+    if args.command == "build-phase2b-v2-states":
+        return run_phase2b_v2_states(args.contract)
     return 1
 
 

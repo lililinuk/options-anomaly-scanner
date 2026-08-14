@@ -1,5 +1,25 @@
 # System Architecture
 
+## Phase 2B v2 research-state layer
+
+The v2 layer is database-only and sits after preserved Phase 2A provenance and immutable Phase 2B
+v1.x context normalization:
+
+```text
+Phase 2A evidence ─┐
+                   ├─> Phase 2B v2 pure state builder
+Phase 2B v1.x ctx ─┘          │
+                              v
+                  phase2b_candidate_states (append-only)
+                              │
+                              v
+FastAPI candidate confirmation -> fixed Next.js proxy -> dashboard
+```
+
+Vendor transport does not enter the v2 builder. Positioning, price, volatility, Dealer/GEX,
+execution, and readiness remain separate JSON state objects. Expiry-only rows stop before the
+contract-state builder. The browser never receives credentials and never calls Nightwatch.
+
 ## Phase 2A runtime extension
 
 The accepted Phase 1 transport → raw ingestion → normalization → persistence boundary remains unchanged. Phase 2A adds a versioned scanner configuration and pure analytics layer, an explicit eight-stage manual orchestrator, append-only scanner entities, fixed FastAPI scan routes, a fixed Next.js proxy, and dashboard/read-only field-guide presentation. Nightwatch remains backend-only. The application-process scan runner is suitable for manual development use but is not a durable production queue.

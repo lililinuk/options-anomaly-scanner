@@ -22,6 +22,16 @@ for (const required of [
   if (!source.includes(required)) throw new Error(`Required v1.3 glossary concept missing: ${required}`);
 }
 for (const required of [
+  "Research State", "Positioning Evidence Breadth", "Candidate Term Topology",
+  "Candidate Net GEX Sign", "Research Readiness", "Direction UNRESOLVED",
+  "Expiry-only Research Row",
+]) {
+  if (!source.includes(required)) throw new Error(`Required Phase 2B v2 glossary concept missing: ${required}`);
+}
+for (const required of ["Research State", "Positioning Evidence", "Term topology", "Dealer GEX sign"]) {
+  if (!dashboard.includes(required)) throw new Error(`Required Phase 2B v2 dashboard state missing: ${required}`);
+}
+for (const required of [
   "Latest Contract Events", "Persistent Positioning", "Unusual Expiry Activity",
   "Deep Dive / Research Candidates",
 ]) {

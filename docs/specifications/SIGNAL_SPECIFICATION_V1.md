@@ -2,6 +2,10 @@
 
 Current immutable version: `signal_spec_v1.3_phase2a`
 
+Phase 2B v2 is a separate immutable layer documented in
+`docs/specifications/SIGNAL_SPECIFICATION_V2.md`. It does not alter any Phase 2A v1.0-v1.3 score or
+route and does not infer trade direction.
+
 Historical version `signal_spec_v1.0_phase2a` remains attached to its existing scan records and is
 never recalculated in place. Version `signal_spec_v1.1_phase2a` also remains immutable. Phase 2A v1.2 describes activity and OI positioning structure. It does
 not infer opening buyers, investor direction, BUY/SELL, GEX trading logic, lifecycle, Tradeability,

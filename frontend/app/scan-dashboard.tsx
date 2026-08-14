@@ -76,6 +76,7 @@ type ExpiryActivity = {
 };
 
 type ResearchCandidate = {
+  entity_type: "CONTRACT" | "EXPIRY_ONLY";
   ticker: string;
   contract_or_expiry: string;
   expiration: string | null;
@@ -103,6 +104,17 @@ type Phase2bContext = {
   specification_version: string;
   config_version: string;
   evaluated_at: string;
+  v2_state: {
+    positioning: Record<string, unknown>;
+    price: Record<string, unknown>;
+    volatility: Record<string, unknown>;
+    dealer_gex: Record<string, unknown>;
+    execution: Record<string, unknown>;
+    research_readiness: Record<string, unknown>;
+    phase2a_provenance: Record<string, unknown>;
+    direction: string;
+    specification_version: string;
+  } | null;
 };
 
 type Payload = {
@@ -277,9 +289,17 @@ function ConfirmationContext({ context }: { context: Phase2bContext }) {
   const ranked = Array.isArray(context.dealer.top_vendor_ranked_rows)
     ? context.dealer.top_vendor_ranked_rows as Record<string, unknown>[] : [];
   const dealerUnavailable = context.dealer.availability === "UNAVAILABLE";
+  const state = context.v2_state;
+  const positioning = state?.positioning ?? {};
+  const readiness = state?.research_readiness ?? {};
+  const v2Volatility = state?.volatility ?? {};
+  const v2Dealer = state?.dealer_gex ?? {};
+  const presence = (positioning.presence_states ?? {}) as Record<string, unknown>;
   return <div className="confirmation-workspace" aria-label="Phase 2B confirmation context">
     <div className="confirmation-heading"><div><span className="eyebrow">Phase 2B · Context only</span><h3>{context.candidate.ticker} · {context.candidate.contract_symbol}</h3></div><span className="direction-badge">Direction: {context.candidate.direction}</span></div>
     <div className="confirmation-grid">
+      <ContextCard title="Research State" rows={[["Readiness", value(readiness, "state")], ["Missing / degraded layers", value(readiness, "missing_or_degraded_count")], ["Positioning breadth", value(positioning, "evidence_breadth")], ["Evidence family count", value(positioning, "evidence_family_count")], ["Price trend", value(state?.price ?? {}, "trend")], ["Term topology", value(v2Volatility, "topology")], ["Dealer GEX sign", value(v2Dealer, "sign")], ["Direction", state?.direction ?? "UNRESOLVED"]]} />
+      <ContextCard title="Positioning Evidence" rows={[["Radar", value(presence, "radar_event")], ["Contract persistence", value(presence, "contract_persistence")], ["Expiry persistence", value(presence, "expiry_persistence")], ["Structure", value(presence, "structure")], ["Exact cluster membership", value(presence, "cluster")]]} />
       <ContextCard title="Candidate Summary" rows={[["Expiry / DTE", `${context.candidate.expiration} / ${display(context.candidate.dte)}`], ["Right / Strike", `${context.candidate.right} / ${display(context.candidate.strike)}`], ["Current price", value(stock, "current_price_usd")], ["Triggers", context.candidate.trigger_sources.join(", ")], ["Archive", value(context.phase2a, "archive_completeness")]]} />
       <ContextCard title="Why It Was Found" rows={[["Radar event", value(context.phase2a, "radar_material_event")], ["Premium", money(typeof context.phase2a.premium_usd === "number" ? context.phase2a.premium_usd : null)], ["ΔOI", value(context.phase2a, "oi_diff")], ["Structure", value(context.phase2a, "structure_score")], ["Persistence", value(context.phase2a, "contract_persistence")]]} />
       <article><h4>Price Context</h4><dl><div><dt>Current Stock State</dt><dd>{value(stock, "current_price_usd")} · {value(stock, "session")}</dd></div><div><dt>Stock State as-of</dt><dd>{value(stock, "as_of")}</dd></div><div><dt>Latest Regular Close</dt><dd>{value(history, "latest_regular_close_usd")} · {value(history, "latest_valid_regular_date")}</dd></div><div><dt>Strike location / distance</dt><dd>{value(location, "state")} · {percent(typeof location.strike_distance_pct === "number" ? location.strike_distance_pct : null)}</dd></div><div><dt>1D / 5D / 20D</dt><dd>{percent(typeof history.return_1d === "number" ? history.return_1d : null)} / {percent(typeof history.return_5d === "number" ? history.return_5d : null)} / {percent(typeof history.return_20d === "number" ? history.return_20d : null)}</dd></div><div><dt>SMA20 / SMA50</dt><dd>{value(history, "sma_20")} / {value(history, "sma_50")}</dd></div><div><dt>Distance to SMA20 / SMA50</dt><dd>{percent(typeof history.distance_to_sma20_pct === "number" ? history.distance_to_sma20_pct : null)} / {percent(typeof history.distance_to_sma50_pct === "number" ? history.distance_to_sma50_pct : null)}</dd></div><div><dt>20-session high / low</dt><dd>{value(history, "rolling_high_20")} / {value(history, "rolling_low_20")}</dd></div><div><dt>Trend / ATR14</dt><dd>{value(history, "trend")} / {value(history, "atr_14")}</dd></div><div><dt>Strike distance ATR</dt><dd>{value(location, "strike_distance_atr")}</dd></div><div><dt>Coverage</dt><dd>{value(history, "coverage_quality")} · valid {value(history, "valid_regular_session_count")} · gaps {String((typeof history.missing_regular_date_count === "number" ? history.missing_regular_date_count : 0) + (typeof history.ambiguous_regular_date_count === "number" ? history.ambiguous_regular_date_count : 0))}</dd></div></dl><details><summary>Price data quality details</summary><p>Policy: {value(history, "daily_session_policy")}</p><p>Missing regular dates: {Array.isArray(history.missing_regular_dates) && history.missing_regular_dates.length ? history.missing_regular_dates.join(", ") : "—"}</p><p>Ambiguous regular dates: {Array.isArray(history.ambiguous_regular_dates) && history.ambiguous_regular_dates.length ? history.ambiguous_regular_dates.join(", ") : "—"}</p></details><small>OHLC split-adjustment semantics are not confirmed ({value(history, "price_adjustment_semantics")}).</small></article>

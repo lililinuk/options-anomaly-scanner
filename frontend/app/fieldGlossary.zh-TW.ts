@@ -124,6 +124,13 @@ export const fieldGlossary = {
   dealer_unavailable_phase2b: entry("Dealer/GEX 資料不可用", "Dealer/GEX Unavailable", "本次評估沒有可用的 Heatmap surface。", "candidate cell 與 row stack 狀態分別為 UNAVAILABLE 與 ROW_UNAVAILABLE，所有 GEX 數值保持 NULL。", "候選與其他 Phase 2B context 仍然保留。", "不可顯示為零，也不可等同於 usable surface 中的 NOT_PRESENT。"),
   direction_unresolved: entry("方向未解析", "Direction Unresolved", "現有證據無法確立經濟發起部位是 long、short、spread 或 hedge。", "Phase 2B v1 固定保留 UNRESOLVED。", "將 positioning significance 與 directional interpretation 分離。", "Call、正 ΔOI、大 Premium、價格或 GEX 正負都不能單獨解決方向。"),
   last_scan: entry("最近掃描", "Last Scan", "此列結果所屬掃描的完成或開始時間。"),
+  phase2b_research_state: entry("研究狀態", "Research State", "六個獨立研究維度的資料完整度狀態。", "逐層檢查 Positioning、Price、IV Rank、candidate term、Dealer/GEX 與 Execution；不加權、不合成交易分數。", "CONTEXT_COMPLETE、CONTEXT_PARTIAL 或 CONTEXT_LIMITED 只描述研究資料覆蓋。", "不是 alpha、信心、好壞或交易建議。"),
+  positioning_evidence_breadth: entry("部位證據廣度", "Positioning Evidence Breadth", "計算五種獨立證據家族中實際出現的家族數。", "Radar Event、Contract Persistence、Expiry Persistence、Structure、Cluster 各最多計一次。", "SINGLE_EVIDENCE 表示一種；MULTI_EVIDENCE 表示至少兩種。", "Radar 的 premium、OI 差、volume、trades 是同一家族，不可重複計數。"),
+  term_topology: entry("期限結構拓樸", "Candidate Term Topology", "候選 expiry IV 與最近較短、較長節點的無門檻相對形狀。", "精確比較後標示 LOCAL_PEAK、LOCAL_TROUGH、RISING_THROUGH_CANDIDATE、FALLING_THROUGH_CANDIDATE、FLAT_OR_EQUAL 或 INCOMPLETE。", "只描述 IV curve 的局部形狀。", "不使用看多、看空、便宜或昂貴等方向性標籤。"),
+  candidate_gex_sign: entry("候選 GEX 符號", "Candidate Net GEX Sign", "僅由候選 expiry × strike 的精確 Heatmap cell 判定正、負或零。", "net GEX > 0、< 0、= 0 分別對應 POSITIVE、NEGATIVE、ZERO；無精確 cell 為 UNKNOWN。", "來源品質與符號分開呈現。", "degraded 的精確值仍是事實，但會降低研究資料完整度；不可把缺失當零。"),
+  research_readiness: entry("研究準備度", "Research Readiness", "六層 context 是否具備可追溯研究資料的 checklist。", "缺失或 degraded 0 層為 COMPLETE、1 層為 PARTIAL、2 層以上為 LIMITED。", "用來指出還缺哪些資料層。", "不是 Tradeability、Conviction 或方向分數。"),
+  direction_unresolved_v2: entry("方向未解析", "Direction UNRESOLVED", "Phase 2B v2 不從目前證據推論投資人方向。", "固定保存 UNRESOLVED。", "將資料狀態與金融方向嚴格分離。", "Call/Put、ΔOI、premium、price trend、IV topology 或 GEX 正負都不能單獨推出 bull/bear。"),
+  expiry_only_research_row: entry("僅到期日研究列", "Expiry-only Research Row", "只有 expiry 層級 evidence、沒有精確合約身份的研究列。", "API 以 entity_type=EXPIRY_ONLY 明確標示。", "仍可顯示 expiry evidence。", "不得捏造 contract Greeks、execution、GEX cell 或 v2 contract state。"),
 } satisfies Record<string, GlossaryEntry>;
 
 export type GlossaryKey = keyof typeof fieldGlossary;
@@ -135,4 +142,7 @@ export const visibleAnalyticalColumns = [
   "oi_share", "oi_share_change", "oi_skew", "history_coverage",
   "contract_structure_score", "contract_persistent_score", "oi_change_radar_status",
   "call_cluster_score", "put_cluster_score", "archive_vendor_oi_date", "last_scan",
+  "phase2b_research_state", "positioning_evidence_breadth", "term_topology",
+  "candidate_gex_sign", "research_readiness", "direction_unresolved_v2",
+  "expiry_only_research_row",
 ] as const satisfies readonly GlossaryKey[];

@@ -23,6 +23,7 @@ from app.confirmation.domain import (
     normalize_stock_state,
     strike_location,
 )
+from app.confirmation.state_v2 import latest_v2_state
 from app.core.time import utc_now
 from app.db.models import (
     ContractOiDailySnapshot,
@@ -479,6 +480,9 @@ def latest_candidate_context(session: Session, contract_symbol: str) -> dict[str
         "specification_version": evaluation.specification_version,
         "config_version": evaluation.config_version,
         "evaluated_at": evaluation.evaluated_at.isoformat(),
+        "v2_state": latest_v2_state(
+            session, contract_symbol, candidate_evaluation_id=evaluation.id
+        ),
         "deferred": {"iv_vs_rv": "NOT_IMPLEMENTED", "skew": "NOT_IMPLEMENTED",
                      "event_risk": "NOT_AVAILABLE", "standard_gex": "NOT_IMPLEMENTED",
                      "zero_dte_dealer_gex": "NOT_IMPLEMENTED"},

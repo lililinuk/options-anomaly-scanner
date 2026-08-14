@@ -415,6 +415,7 @@ def _deep_dive_public(
             continue
         key = (row.ticker, row.contract_symbol)
         candidates[key] = {
+            "entity_type": "CONTRACT",
             "ticker": row.ticker,
             "contract_or_expiry": row.contract_symbol,
             "expiration": row.matched_expiration.isoformat() if row.matched_expiration else None,
@@ -432,6 +433,7 @@ def _deep_dive_public(
         item = candidates.setdefault(
             key,
             {
+                "entity_type": "CONTRACT",
                 "ticker": row.ticker,
                 "contract_or_expiry": row.contract_symbol,
                 "expiration": row.expiration.isoformat(),
@@ -455,6 +457,7 @@ def _deep_dive_public(
         candidates.setdefault(
             key,
             {
+                "entity_type": "EXPIRY_ONLY",
                 "ticker": row.ticker,
                 "contract_or_expiry": row.expiration.isoformat(),
                 "expiration": row.expiration.isoformat(),

@@ -73,6 +73,12 @@ chain is loaded at most once. Radar ranks by Premium then absolute ΔOI. Exact a
 literal string equality. Unmatched/incomplete evidence stays visible but cannot fabricate structure.
 Monthly OPEX inference and Same-Day Score Basis are display context with score weight zero.
 
+## Phase 2B v2 database-only state build
+
+Phase 2B v2 state materialization is documented in
+`docs/specifications/PHASE2B_V2_ORCHESTRATION.md`. It reads preserved evidence, never becomes part of
+the daily Nightwatch collection jobs, and does not change Phase 2A route selection.
+
 ## Scheduling requirement
 
 Use a durable platform scheduler (cron, systemd timer, managed job scheduler, or equivalent) to run

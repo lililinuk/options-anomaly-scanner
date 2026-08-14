@@ -738,6 +738,47 @@ class Phase2bCandidateEvaluation(Base):
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class Phase2bCandidateState(Base):
+    """Immutable v2 research state derived from one preserved candidate evaluation."""
+
+    __tablename__ = "phase2b_candidate_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_evaluation_id",
+            "specification_version",
+            name="uq_phase2b_candidate_state_evaluation_spec",
+        ),
+        Index("ix_phase2b_candidate_state_symbol_evaluated", "contract_symbol", "evaluated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    candidate_evaluation_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("phase2b_candidate_evaluations.id"), nullable=False
+    )
+    ticker_context_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("phase2b_ticker_context_snapshots.id"), nullable=False
+    )
+    contract_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    positioning_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    price_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    volatility_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    dealer_gex_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    execution_state: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    research_readiness: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    phase2a_provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_context_specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    topology_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    readiness_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class SignalDetection(Base):
     """Future detection record: detection fields are append-only historical facts."""
 
