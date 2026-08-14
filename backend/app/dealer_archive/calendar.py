@@ -24,6 +24,7 @@ def dealer_capture_session_plan(
     *,
     timezone_name: str,
     local_time: str,
+    enforce_target_time: bool = False,
 ) -> CaptureSessionPlan:
     """Resolve the configured slot against the authoritative XNYS session calendar."""
 
@@ -50,5 +51,13 @@ def dealer_capture_session_plan(
             close,
             False,
             "SKIPPED_TARGET_AFTER_EARLY_CLOSE",
+        )
+    if enforce_target_time and aware_now < ensure_utc(intended):
+        return CaptureSessionPlan(
+            market_day,
+            intended,
+            close,
+            False,
+            "SKIPPED_BEFORE_TARGET_SLOT",
         )
     return CaptureSessionPlan(market_day, intended, close, True, "READY")

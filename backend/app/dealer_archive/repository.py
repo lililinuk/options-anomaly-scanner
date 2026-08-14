@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -21,19 +21,68 @@ from app.dealer_archive.config import (
 from app.dealer_archive.domain import NormalizedDealerGexSurface
 
 
-def existing_archive_run(
-    session: Session,
+def archive_run_suppresses_capture(
+    run: DealerGexArchiveRun,
     *,
-    market_date: Any,
+    market_date: date,
     intended_capture_slot: str,
     scope_key: str,
+    specification_version: str,
+    config_version: str,
+    config_hash: str,
+    intended_at: datetime,
+) -> bool:
+    """Return whether a terminal equivalent run validly consumed this logical slot."""
+
+    return (
+        run.status == "COMPLETE"
+        and run.completed_at is not None
+        and run.ny_market_date == market_date
+        and run.intended_capture_slot == intended_capture_slot
+        and run.scope_key == scope_key
+        and run.specification_version == specification_version
+        and run.config_version == config_version
+        and run.config_hash == config_hash
+        and ensure_utc(run.started_at) >= ensure_utc(intended_at)
+    )
+
+
+def reusable_completed_archive_run(
+    session: Session,
+    *,
+    market_date: date,
+    intended_capture_slot: str,
+    scope_key: str,
+    specification_version: str,
+    config_version: str,
+    config_hash: str,
+    intended_at: datetime,
 ) -> DealerGexArchiveRun | None:
-    return session.scalar(
+    candidates = session.scalars(
         select(DealerGexArchiveRun).where(
             DealerGexArchiveRun.ny_market_date == market_date,
             DealerGexArchiveRun.intended_capture_slot == intended_capture_slot,
             DealerGexArchiveRun.scope_key == scope_key,
+            DealerGexArchiveRun.status == "COMPLETE",
         )
+        .order_by(desc(DealerGexArchiveRun.completed_at), desc(DealerGexArchiveRun.started_at))
+    )
+    return next(
+        (
+            run
+            for run in candidates
+            if archive_run_suppresses_capture(
+                run,
+                market_date=market_date,
+                intended_capture_slot=intended_capture_slot,
+                scope_key=scope_key,
+                specification_version=specification_version,
+                config_version=config_version,
+                config_hash=config_hash,
+                intended_at=intended_at,
+            )
+        ),
+        None,
     )
 
 

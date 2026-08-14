@@ -832,11 +832,12 @@ class DealerGexArchiveRun(Base):
 
     __tablename__ = "dealer_gex_archive_runs"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "ix_dealer_gex_run_slot_status",
             "ny_market_date",
             "intended_capture_slot",
             "scope_key",
-            name="uq_dealer_gex_run_market_date_slot_scope",
+            "status",
         ),
         Index("ix_dealer_gex_run_started", "started_at"),
     )

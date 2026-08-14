@@ -20,10 +20,12 @@ from app.dealer_archive.config import (
 )
 from app.dealer_archive.domain import normalize_dealer_gex_surface
 from app.dealer_archive.repository import (
+    archive_run_suppresses_capture,
     best_archived_surface_at_or_before,
+    dealer_gex_history_coverage,
     persist_surface,
 )
-from app.dealer_archive.service import DealerGexArchiver
+from app.dealer_archive.service import DealerGexArchiveConcurrentError, DealerGexArchiver
 from app.nightwatch.errors import NightwatchError
 from app.nightwatch.models import ApiUsageEvent
 
@@ -37,6 +39,7 @@ UTC = timezone.utc
         ("DRY_RUN_READY", 0),
         ("SKIPPED_NON_TRADING_SESSION", 0),
         ("SKIPPED_TARGET_AFTER_EARLY_CLOSE", 0),
+        ("SKIPPED_BEFORE_TARGET_SLOT", 0),
         ("PARTIAL", 4),
         ("EMPTY", 4),
         ("SKIPPED_DISABLED", 4),
@@ -91,6 +94,126 @@ def _config(universe: tuple[str, ...] = ("NVDA", "MSFT")) -> DealerGexArchiveCon
         intended_capture_slot="15:30",
         max_network_attempts=len(universe),
         max_consumed_units=len(universe),
+    )
+
+
+def _archive_run(
+    config: DealerGexArchiveConfig,
+    *,
+    status: str,
+    started_at: datetime = datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        trigger="external_scheduler",
+        status=status,
+        started_at=started_at,
+        completed_at=datetime(2026, 8, 14, 19, 32, tzinfo=UTC),
+        ny_market_date=date(2026, 8, 14),
+        intended_capture_slot="15:30",
+        scope_key="NVDA",
+        specification_version="signal_spec_v3.1_phase2b",
+        config_version=config.version,
+        config_hash=config.hash(),
+        summary={"tickers": []},
+        tickers_attempted=1,
+        tickers_succeeded=1 if status == "COMPLETE" else 0,
+        tickers_failed=0 if status == "COMPLETE" else 1,
+        observations_reused=0,
+        network_attempts=1,
+        consumed_quota_units=1 if status == "COMPLETE" else 0,
+        quota_remaining_before=None,
+        quota_remaining_after=None,
+    )
+
+
+class _ArchiveSession:
+    def __init__(
+        self,
+        runs: list[object] | None = None,
+        *,
+        lock_available: bool = True,
+    ) -> None:
+        self.runs = list(runs or [])
+        self.added_runs: list[DealerGexArchiveRun] = []
+        self.lock_available = lock_available
+        self.lock_checks = 0
+        self.unlocks = 0
+
+    def scalars(self, _statement):  # type: ignore[no-untyped-def]
+        return iter(self.runs)
+
+    def scalar(self, statement):  # type: ignore[no-untyped-def]
+        if "pg_try_advisory_lock" in str(statement):
+            self.lock_checks += 1
+            return self.lock_available
+        return None
+
+    def add(self, row):  # type: ignore[no-untyped-def]
+        if getattr(row, "id", None) is None:
+            row.id = uuid.uuid4()
+        if isinstance(row, DealerGexArchiveRun):
+            self.runs.append(row)
+            self.added_runs.append(row)
+
+    def commit(self) -> None:
+        return None
+
+    def execute(self, statement):  # type: ignore[no-untyped-def]
+        if "pg_advisory_unlock" in str(statement):
+            self.unlocks += 1
+        return None
+
+
+class _CapturingClient:
+    _usage_observer = None
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, object]] = []
+
+    async def request(self, _method, path, **kwargs):  # type: ignore[no-untyped-def]
+        ticker = kwargs["ticker"]
+        self.calls.append((ticker, path, kwargs.get("params")))
+        event = ApiUsageEvent(
+            endpoint=path,
+            command="phase2b.dealer_gex_archive",
+            requested_at=datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+            ticker=ticker,
+            http_status=200,
+            consumed_quota=True,
+            quota_remaining=99,
+            request_id=f"safe-{ticker}",
+            latency_ms=1,
+            attempt_count=1,
+            retry_count=0,
+        )
+        self._usage_observer(event)
+        payload = _payload()
+        payload["data"]["ticker"] = ticker
+        return SimpleNamespace(
+            payload=payload,
+            status_code=200,
+            vendor_request_id=f"safe-vendor-{ticker}",
+            request_id=f"safe-{ticker}",
+        )
+
+
+class _ForbiddenClient:
+    def __getattr__(self, _name):  # type: ignore[no-untyped-def]
+        raise AssertionError("suppressed or skipped execution must not touch Nightwatch")
+
+
+def _patch_success_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.dealer_archive.service.persist_api_usage", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "app.dealer_archive.service.RawIngestor.persist",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        "app.dealer_archive.service.persist_surface",
+        lambda *_args, **_kwargs: (SimpleNamespace(id=uuid.uuid4()), False),
     )
 
 
@@ -196,7 +319,12 @@ def test_archive_model_uniqueness_is_observation_and_run_scoped_not_ticker_date(
         for constraint in DealerGexSnapshotCell.__table__.constraints
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
-    assert ("ny_market_date", "intended_capture_slot", "scope_key") in run_unique
+    run_indexes = {
+        tuple(column.name for column in index.columns)
+        for index in DealerGexArchiveRun.__table__.indexes
+    }
+    assert ("ny_market_date", "intended_capture_slot", "scope_key") not in run_unique
+    assert ("ny_market_date", "intended_capture_slot", "scope_key", "status") in run_indexes
     assert ("observation_identity",) in snapshot_unique
     assert ("archive_run_id", "ticker") in snapshot_unique
     assert ("snapshot_id", "expiration", "strike") in cell_unique
@@ -207,7 +335,14 @@ def test_persist_surface_reuses_replayed_observation_without_new_cells() -> None
         "NVDA", _payload(), source_http_status=200,
         captured_at=datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
     )
-    existing = SimpleNamespace(id=uuid.uuid4())
+    first_run_id = uuid.uuid4()
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        archive_run_id=first_run_id,
+        is_analytical_observation=True,
+        vendor_observed_at=datetime(2026, 8, 14, 19, 30, tzinfo=UTC),
+        source_quality="AVAILABLE",
+    )
 
     class Session:
         def scalar(self, _statement):  # type: ignore[no-untyped-def]
@@ -230,6 +365,17 @@ def test_persist_surface_reuses_replayed_observation_without_new_cells() -> None
     )
     assert reused is True
     assert row is existing
+    assert row.archive_run_id == first_run_id
+
+    class CoverageSession:
+        def scalars(self, _statement):  # type: ignore[no-untyped-def]
+            return iter([existing])
+
+    coverage = dealer_gex_history_coverage(
+        CoverageSession(),  # type: ignore[arg-type]
+        ("NVDA",),
+    )
+    assert coverage[0]["distinct_valid_observations"] == 1
 
 
 def test_market_calendar_skips_weekend_and_target_after_early_close() -> None:
@@ -246,6 +392,233 @@ def test_market_calendar_skips_weekend_and_target_after_early_close() -> None:
     assert weekend.status == "SKIPPED_NON_TRADING_SESSION"
     assert early_close.status == "SKIPPED_TARGET_AFTER_EARLY_CLOSE"
     assert early_close.session_close is not None
+
+
+def test_scheduled_calendar_skips_before_target_and_allows_after_target() -> None:
+    before = dealer_capture_session_plan(
+        datetime(2026, 8, 14, 18, tzinfo=UTC),
+        timezone_name="America/New_York",
+        local_time="15:30",
+        enforce_target_time=True,
+    )
+    after = dealer_capture_session_plan(
+        datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+        timezone_name="America/New_York",
+        local_time="15:30",
+        enforce_target_time=True,
+    )
+    manual_before = dealer_capture_session_plan(
+        datetime(2026, 8, 14, 18, tzinfo=UTC),
+        timezone_name="America/New_York",
+        local_time="15:30",
+    )
+    assert before.status == "SKIPPED_BEFORE_TARGET_SLOT"
+    assert before.should_capture is False
+    assert after.status == "READY"
+    assert after.should_capture is True
+    assert manual_before.status == "READY"
+
+
+def test_run_suppression_matrix_requires_equivalent_post_slot_complete() -> None:
+    current = _config(("NVDA",))
+    old = DealerGexArchiveConfig(
+        version="2026-08-14.v3.1",
+        enabled=True,
+        universe=("NVDA",),
+        market_timezone="America/New_York",
+        intended_capture_slot="15:30",
+        max_network_attempts=1,
+        max_consumed_units=1,
+        endpoint_format="full",
+    )
+    intended_at = datetime(2026, 8, 14, 19, 30, tzinfo=UTC)
+
+    def suppresses(run: SimpleNamespace) -> bool:
+        return archive_run_suppresses_capture(
+            run,  # type: ignore[arg-type]
+            market_date=date(2026, 8, 14),
+            intended_capture_slot="15:30",
+            scope_key="NVDA",
+            specification_version="signal_spec_v3.1_phase2b",
+            config_version=current.version,
+            config_hash=current.hash(),
+            intended_at=intended_at,
+        )
+
+    assert suppresses(_archive_run(current, status="PARTIAL")) is False  # Case A
+    assert suppresses(_archive_run(current, status="FAILED")) is False  # Case B
+    assert suppresses(_archive_run(old, status="PARTIAL")) is False  # Case C
+    assert suppresses(_archive_run(old, status="COMPLETE")) is False  # Case D
+    assert suppresses(_archive_run(current, status="COMPLETE")) is True  # Case E
+    assert suppresses(
+        _archive_run(
+            current,
+            status="COMPLETE",
+            started_at=datetime(2026, 8, 14, 19, 29, tzinfo=UTC),
+        )
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("historical_status", "use_old_profile"),
+    [
+        ("PARTIAL", False),
+        ("FAILED", False),
+        ("PARTIAL", True),
+        ("COMPLETE", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_non_equivalent_historical_run_creates_append_only_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    historical_status: str,
+    use_old_profile: bool,
+) -> None:
+    current = _config(("NVDA",))
+    historical_config = (
+        DealerGexArchiveConfig(
+            version="2026-08-14.v3.1",
+            enabled=True,
+            universe=("NVDA",),
+            market_timezone="America/New_York",
+            intended_capture_slot="15:30",
+            max_network_attempts=1,
+            max_consumed_units=1,
+            endpoint_format="full",
+        )
+        if use_old_profile
+        else current
+    )
+    historical = _archive_run(historical_config, status=historical_status)
+    session = _ArchiveSession([historical])
+    client = _CapturingClient()
+    _patch_success_persistence(monkeypatch)
+
+    summary = await DealerGexArchiver(
+        session,  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
+        current,
+    ).execute(
+        trigger="external_scheduler",
+        now=datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+    )
+
+    assert historical.status == historical_status
+    assert len(session.added_runs) == 1
+    assert session.added_runs[0].id != historical.id
+    assert session.added_runs[0].trigger == "external_scheduler"
+    assert summary.status == "COMPLETE"
+    assert client.calls == [
+        ("NVDA", "/v1/derived/heatmap/NVDA/snapshot", None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_equivalent_completed_run_suppresses_without_client_or_new_attempt() -> None:
+    config = _config(("NVDA",))
+    complete = _archive_run(config, status="COMPLETE")
+    session = _ArchiveSession([complete])
+
+    summary = await DealerGexArchiver(
+        session,  # type: ignore[arg-type]
+        _ForbiddenClient(),  # type: ignore[arg-type]
+        config,
+    ).execute(
+        trigger="external_scheduler",
+        now=datetime(2026, 8, 14, 19, 35, tzinfo=UTC),
+    )
+
+    assert summary.archive_run_id == complete.id
+    assert summary.status == "COMPLETE"
+    assert session.added_runs == []
+    assert session.lock_checks == 0
+
+
+@pytest.mark.asyncio
+async def test_post_lock_recheck_closes_equivalent_invocation_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(("NVDA",))
+    complete = _archive_run(config, status="COMPLETE")
+    sequence = iter([None, complete])
+    monkeypatch.setattr(
+        "app.dealer_archive.service.reusable_completed_archive_run",
+        lambda *_args, **_kwargs: next(sequence),
+    )
+    session = _ArchiveSession()
+
+    summary = await DealerGexArchiver(
+        session,  # type: ignore[arg-type]
+        _ForbiddenClient(),  # type: ignore[arg-type]
+        config,
+    ).execute(
+        trigger="external_scheduler",
+        now=datetime(2026, 8, 14, 19, 35, tzinfo=UTC),
+    )
+
+    assert summary.archive_run_id == complete.id
+    assert session.lock_checks == 1
+    assert session.unlocks == 1
+    assert session.added_runs == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_pre_slot_skip_does_not_consume_post_slot_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(("NVDA",))
+    session = _ArchiveSession()
+
+    before = await DealerGexArchiver(
+        session,  # type: ignore[arg-type]
+        _ForbiddenClient(),  # type: ignore[arg-type]
+        config,
+    ).execute(
+        trigger="external_scheduler",
+        now=datetime(2026, 8, 14, 18, tzinfo=UTC),
+    )
+    assert before.status == "SKIPPED_BEFORE_TARGET_SLOT"
+    assert before.network_attempts == 0
+    assert len(session.added_runs) == 1
+    assert session.added_runs[0].status == "SKIPPED_BEFORE_TARGET_SLOT"
+
+    _patch_success_persistence(monkeypatch)
+    client = _CapturingClient()
+    after = await DealerGexArchiver(
+        session,  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
+        config,
+    ).execute(
+        trigger="external_scheduler",
+        now=datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+    )
+    assert after.status == "COMPLETE"
+    assert len(session.added_runs) == 2
+    assert session.added_runs[0].status == "SKIPPED_BEFORE_TARGET_SLOT"
+    assert session.added_runs[1].status == "COMPLETE"
+    assert client.calls == [
+        ("NVDA", "/v1/derived/heatmap/NVDA/snapshot", None)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_invocation_stops_before_vendor_capture() -> None:
+    config = _config(("NVDA",))
+    session = _ArchiveSession(lock_available=False)
+    client = _CapturingClient()
+
+    with pytest.raises(DealerGexArchiveConcurrentError):
+        await DealerGexArchiver(
+            session,  # type: ignore[arg-type]
+            client,  # type: ignore[arg-type]
+            config,
+        ).execute(
+            trigger="external_scheduler",
+            now=datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+        )
+
+    assert client.calls == []
+    assert session.added_runs == []
 
 
 def test_temporal_archive_selection_requires_vendor_and_capture_time_no_later_than_cutoff() -> None:
@@ -374,7 +747,8 @@ async def test_partial_vendor_failure_keeps_prior_ticker_success_and_never_retri
             )
 
     monkeypatch.setattr(
-        "app.dealer_archive.service.existing_archive_run", lambda *_args, **_kwargs: None
+        "app.dealer_archive.service.reusable_completed_archive_run",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         "app.dealer_archive.service.persist_api_usage", lambda *_args, **_kwargs: None

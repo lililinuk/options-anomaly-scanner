@@ -19,7 +19,7 @@ from app.dealer_archive.config import (
     active_dealer_gex_archive_config,
 )
 from app.dealer_archive.domain import normalize_dealer_gex_surface, unavailable_surface
-from app.dealer_archive.repository import existing_archive_run, persist_surface
+from app.dealer_archive.repository import persist_surface, reusable_completed_archive_run
 from app.ingestion.raw import RawIngestor
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
@@ -102,6 +102,7 @@ class DealerGexArchiver:
             capture_time,
             timezone_name=self.config.market_timezone,
             local_time=self.config.intended_capture_slot,
+            enforce_target_time=trigger == "external_scheduler",
         )
         selected = tuple(dict.fromkeys(tickers or self.config.universe))
         invalid = sorted(set(selected).difference(self.config.universe))
@@ -126,14 +127,20 @@ class DealerGexArchiver:
                 True,
             )
 
-        existing = existing_archive_run(
-            self.session,
-            market_date=plan.market_date,
-            intended_capture_slot=self.config.intended_capture_slot,
-            scope_key=scope_key,
-        )
-        if existing is not None:
-            return _summary_from_run(existing)
+        config_hash = self.config.hash()
+        if self.config.enabled and plan.should_capture:
+            existing = reusable_completed_archive_run(
+                self.session,
+                market_date=plan.market_date,
+                intended_capture_slot=self.config.intended_capture_slot,
+                scope_key=scope_key,
+                specification_version=DEALER_GEX_ARCHIVE_SPEC_VERSION,
+                config_version=self.config.version,
+                config_hash=config_hash,
+                intended_at=plan.intended_at,
+            )
+            if existing is not None:
+                return _summary_from_run(existing)
 
         if not bool(
             self.session.scalar(
@@ -141,9 +148,23 @@ class DealerGexArchiver:
             )
         ):
             raise DealerGexArchiveConcurrentError("A Dealer/GEX archive is already running")
-        original_observer = getattr(self.client, "_usage_observer", None)
-        self.client._usage_observer = self._observe_usage
+        original_observer: Any = None
+        observer_installed = False
         try:
+            if self.config.enabled and plan.should_capture:
+                existing = reusable_completed_archive_run(
+                    self.session,
+                    market_date=plan.market_date,
+                    intended_capture_slot=self.config.intended_capture_slot,
+                    scope_key=scope_key,
+                    specification_version=DEALER_GEX_ARCHIVE_SPEC_VERSION,
+                    config_version=self.config.version,
+                    config_hash=config_hash,
+                    intended_at=plan.intended_at,
+                )
+                if existing is not None:
+                    return _summary_from_run(existing)
+
             self._run = DealerGexArchiveRun(
                 trigger=trigger,
                 status="RUNNING",
@@ -155,7 +176,7 @@ class DealerGexArchiver:
                 universe=list(selected),
                 specification_version=DEALER_GEX_ARCHIVE_SPEC_VERSION,
                 config_version=self.config.version,
-                config_hash=self.config.hash(),
+                config_hash=config_hash,
                 configuration_snapshot={
                     **self.config.snapshot(),
                     "scheduler": "EXTERNAL_DURABLE_SCHEDULER_REQUIRED",
@@ -171,6 +192,10 @@ class DealerGexArchiver:
                 return self._finish("SKIPPED_DISABLED", [], started_clock)
             if not plan.should_capture:
                 return self._finish(plan.status, [], started_clock)
+
+            original_observer = getattr(self.client, "_usage_observer", None)
+            self.client._usage_observer = self._observe_usage
+            observer_installed = True
 
             ticker_results: list[dict[str, Any]] = []
             for ticker in selected:
@@ -203,7 +228,8 @@ class DealerGexArchiver:
                 self.session.commit()
             raise
         finally:
-            self.client._usage_observer = original_observer
+            if observer_installed:
+                self.client._usage_observer = original_observer
             self.session.execute(
                 text("SELECT pg_advisory_unlock(hashtext('dealer_gex_time_series_archive'))")
             )

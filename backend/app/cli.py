@@ -384,6 +384,7 @@ def dealer_gex_archive_exit_code(status: str) -> int:
         "DRY_RUN_READY",
         "SKIPPED_NON_TRADING_SESSION",
         "SKIPPED_TARGET_AFTER_EARLY_CLOSE",
+        "SKIPPED_BEFORE_TARGET_SLOT",
     }
     return 0 if status in successful_outcomes else 4
 
