@@ -70,7 +70,9 @@ def persist_surface(
         availability=surface.availability,
         endpoint=endpoint,
         capability=DEALER_GEX_CAPABILITY,
-        endpoint_parameters={"format": config.endpoint_format},
+        endpoint_parameters=(
+            {"format": config.endpoint_format} if config.endpoint_format is not None else {}
+        ),
         source_request_id=source_request_id,
         raw_payload_id=raw.id if raw else None,
         source_http_status=source_http_status,

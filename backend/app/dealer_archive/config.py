@@ -9,7 +9,7 @@ from app.config import get_settings
 from app.scanner.config import UNIVERSE
 
 DEALER_GEX_ARCHIVE_SPEC_VERSION: Final = "signal_spec_v3.1_phase2b"
-DEALER_GEX_SURFACE_SCHEMA_VERSION: Final = "nightwatch_dealer_heatmap_full_v1"
+DEALER_GEX_SURFACE_SCHEMA_VERSION: Final = "nightwatch_dealer_heatmap_default_v1"
 DEALER_GEX_CAPABILITY: Final = "derived.heatmap"
 DEALER_GEX_ENDPOINT_TEMPLATE: Final = "/v1/derived/heatmap/{ticker}/snapshot"
 
@@ -23,7 +23,7 @@ class DealerGexArchiveConfig:
     intended_capture_slot: str
     max_network_attempts: int
     max_consumed_units: int
-    endpoint_format: str = "full"
+    endpoint_format: str | None = None
 
     def snapshot(self) -> dict[str, object]:
         return asdict(self)

@@ -13,7 +13,10 @@ from app.db.models import (
     DealerGexSnapshotCell,
 )
 from app.dealer_archive.calendar import dealer_capture_session_plan
-from app.dealer_archive.config import DealerGexArchiveConfig
+from app.dealer_archive.config import (
+    DEALER_GEX_SURFACE_SCHEMA_VERSION,
+    DealerGexArchiveConfig,
+)
 from app.dealer_archive.domain import normalize_dealer_gex_surface
 from app.dealer_archive.repository import (
     best_archived_surface_at_or_before,
@@ -28,7 +31,14 @@ UTC = timezone.utc
 
 def _payload(*, truncated: bool = False, generated_at: str = "2026-08-14T19:30:00Z") -> dict:
     return {
-        "_meta": {"truncated": truncated, "request_id": "safe-vendor-request"},
+        "_meta": {
+            "truncated": truncated,
+            "request_id": "safe-vendor-request",
+            "cache_hit": False,
+            "data_freshness_seconds": 42,
+            "rate_limit_remaining": 57,
+            "quota_remaining_pct": 91.25,
+        },
         "data": {
             "ticker": "NVDA",
             "generated_at": generated_at,
@@ -42,20 +52,13 @@ def _payload(*, truncated: bool = False, generated_at: str = "2026-08-14T19:30:0
                     "expiration": "2026-08-14",
                     "strike_usd": 180,
                     "net_dealer_gex_usd": 0,
-                    "call_gex_usd": 1500,
-                    "put_gex_usd": -1500,
                 },
                 {
                     "expiration": "2026-08-21",
                     "strike_usd": 185,
                     "net_dealer_gex_usd": -250,
-                    "call_gex_usd": None,
-                    "put_gex_usd": -250,
                 },
             ],
-            "row_stacks": [],
-            "truncated": truncated,
-            "scale": "full",
         },
     }
 
@@ -83,8 +86,35 @@ def test_normalization_preserves_real_zero_and_missing_values() -> None:
     assert result.availability == "AVAILABLE"
     assert result.vendor_observed_at == datetime(2026, 8, 14, 19, 30, tzinfo=UTC)
     assert result.cells[0].net_dealer_gex_usd == 0
+    assert result.cells[0].call_gex_usd is None
+    assert result.cells[0].put_gex_usd is None
     assert result.cells[1].call_gex_usd is None
     assert result.observation_identity is not None
+    assert result.quality_details["truncated_present"] is True
+    assert result.quality_details["truncated_value"] is False
+    assert result.quality_details["vendor_meta"]["request_id"] == "safe-vendor-request"
+
+
+def test_default_request_profile_is_versioned_and_omits_format() -> None:
+    config = _config(("NVDA",))
+    assert config.endpoint_format is None
+    assert DEALER_GEX_SURFACE_SCHEMA_VERSION == "nightwatch_dealer_heatmap_default_v1"
+
+
+def test_missing_truncation_flag_is_distinct_and_degraded_not_truncated() -> None:
+    payload = _payload()
+    payload["_meta"].pop("truncated")
+    result = normalize_dealer_gex_surface(
+        "NVDA",
+        payload,
+        source_http_status=200,
+        captured_at=datetime(2026, 8, 14, 19, 31, tzinfo=UTC),
+    )
+    assert result.source_quality == "AVAILABLE_DEGRADED"
+    assert result.safe_error_code == "TRUNCATION_STATUS_MISSING_OR_INVALID"
+    assert result.truncated is False
+    assert result.quality_details["truncated_present"] is False
+    assert len(result.cells) == 2
 
 
 def test_same_vendor_observation_has_stable_analytical_identity() -> None:
@@ -278,7 +308,7 @@ async def test_partial_vendor_failure_keeps_prior_ticker_success_and_never_retri
 ) -> None:
     class Session:
         def scalar(self, _statement):  # type: ignore[no-untyped-def]
-            return True
+            return True if "pg_try_advisory_lock" in str(_statement) else None
 
         def add(self, row):  # type: ignore[no-untyped-def]
             if getattr(row, "id", None) is None:
@@ -294,11 +324,11 @@ async def test_partial_vendor_failure_keeps_prior_ticker_success_and_never_retri
         _usage_observer = None
 
         def __init__(self) -> None:
-            self.calls: list[str] = []
+            self.calls: list[tuple[str, str, object]] = []
 
         async def request(self, _method, path, **kwargs):  # type: ignore[no-untyped-def]
             ticker = kwargs["ticker"]
-            self.calls.append(ticker)
+            self.calls.append((ticker, path, kwargs.get("params")))
             event = ApiUsageEvent(
                 endpoint=path,
                 command="phase2b.dealer_gex_archive",
@@ -330,10 +360,13 @@ async def test_partial_vendor_failure_keeps_prior_ticker_success_and_never_retri
     monkeypatch.setattr(
         "app.dealer_archive.service.persist_api_usage", lambda *_args, **_kwargs: None
     )
-    monkeypatch.setattr(
-        "app.dealer_archive.service.RawIngestor.persist",
-        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
-    )
+    raw_endpoints: list[str] = []
+
+    def persist_raw(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        raw_endpoints.append(kwargs["endpoint"])
+        return SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr("app.dealer_archive.service.RawIngestor.persist", persist_raw)
     monkeypatch.setattr(
         "app.dealer_archive.service.persist_surface",
         lambda *_args, **_kwargs: (SimpleNamespace(id=uuid.uuid4()), False),
@@ -342,7 +375,12 @@ async def test_partial_vendor_failure_keeps_prior_ticker_success_and_never_retri
     summary = await DealerGexArchiver(
         Session(), client, _config()  # type: ignore[arg-type]
     ).execute(now=datetime(2026, 8, 14, 18, tzinfo=UTC))
-    assert client.calls == ["NVDA", "MSFT"]
+    assert client.calls == [
+        ("NVDA", "/v1/derived/heatmap/NVDA/snapshot", None),
+        ("MSFT", "/v1/derived/heatmap/MSFT/snapshot", None),
+    ]
+    assert raw_endpoints == ["/v1/derived/heatmap/NVDA/snapshot"]
+    assert all("format=full" not in path for _ticker, path, _params in client.calls)
     assert summary.status == "PARTIAL"
     assert summary.tickers_attempted == 2
     assert summary.tickers_succeeded == 1

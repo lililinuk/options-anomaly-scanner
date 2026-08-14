@@ -13,8 +13,13 @@ The archive captures the full multi-expiry Nightwatch Dealer heatmap for every c
 ticker through:
 
 ```text
-GET /v1/derived/heatmap/{ticker}/snapshot?format=full
+GET /v1/derived/heatmap/{ticker}/snapshot
 ```
+
+The optional `format` query parameter is deliberately omitted. A 2026-08-14 recovery validation
+proved that the previously configured `format=full` produced HTTP 400 `VALIDATION_ERROR`, while
+the vendor API Console demonstrated the default request returning the required multi-expiry grid.
+The archive must not send an empty, null, or speculative replacement format value.
 
 The fixed universe is AAPL, MSFT, NVDA, AMZN, META, GOOGL, and TSLA. Capture is independent of
 current candidate selection. Requests are sequential (`concurrency=1`), use zero retries, and are
@@ -41,10 +46,16 @@ endpoint/capability identity, request/raw-evidence references, and a versioned s
 `dealer_gex_snapshot_cells` records every usable expiration/strike cell with nullable net, Call,
 and Put GEX values.
 
-Analytical identity is a deterministic hash of ticker, actual vendor observation timestamp,
-`format=full`, and `nightwatch_dealer_heatmap_full_v1`. Replaying the same vendor surface reuses the
-existing analytical observation. Uniqueness is not ticker plus calendar date; future independently
-configured intraday slots can coexist. There is no retention deletion in v3.1.
+Analytical identity is a deterministic hash of ticker, actual vendor observation timestamp, the
+omitted-format default request profile, and `nightwatch_dealer_heatmap_default_v1`. Replaying the
+same vendor surface reuses the existing analytical observation. Uniqueness is not ticker plus
+calendar date; future independently configured intraday slots can coexist. There is no retention
+deletion in v3.1.
+
+The archive-specific normalizer accepts a timestamped `data.cells` surface without requiring
+`row_stacks`, `call_gex_usd`, or `put_gex_usd`. Missing Call/Put values remain null. `_meta.truncated`
+equal to false is an explicit completeness fact; true makes the surface unusable, while a missing
+or invalid truncation state is retained as degraded quality rather than silently treated as false.
 
 ## Time-series and future-label boundary
 

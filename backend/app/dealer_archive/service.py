@@ -213,11 +213,16 @@ class DealerGexArchiver:
         assert self._run is not None
         endpoint = DEALER_GEX_ENDPOINT_TEMPLATE.format(ticker=ticker)
         captured_at = utc_now()
+        request_parameters = (
+            {"format": self.config.endpoint_format}
+            if self.config.endpoint_format is not None
+            else None
+        )
         try:
             result = await self.client.request(
                 "GET",
                 endpoint,
-                params={"format": self.config.endpoint_format},
+                params=request_parameters,
                 command="phase2b.dealer_gex_archive",
                 ticker=ticker,
             )
@@ -229,8 +234,13 @@ class DealerGexArchiver:
                 )
             )
             if raw is None:
+                raw_endpoint = (
+                    f"{endpoint}?format={self.config.endpoint_format}"
+                    if self.config.endpoint_format is not None
+                    else endpoint
+                )
                 raw = RawIngestor(self.session).persist(
-                    endpoint=f"{endpoint}?format={self.config.endpoint_format}",
+                    endpoint=raw_endpoint,
                     request_id=request_id,
                     vendor_request_id=result.vendor_request_id,
                     payload=result.payload,

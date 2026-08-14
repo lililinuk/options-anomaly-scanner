@@ -7,7 +7,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.confirmation.domain import normalize_heatmap_payload
 from app.dealer_archive.config import DEALER_GEX_SURFACE_SCHEMA_VERSION
 
 USABLE_SOURCE_QUALITIES = frozenset({"AVAILABLE", "AVAILABLE_DEGRADED"})
@@ -76,7 +75,7 @@ def analytical_observation_identity(ticker: str, vendor_observed_at: datetime) -
         "ticker": ticker,
         "vendor_observed_at": vendor_observed_at.isoformat(),
         "surface_schema_version": DEALER_GEX_SURFACE_SCHEMA_VERSION,
-        "format": "full",
+        "request_profile": "FORMAT_QUERY_PARAMETER_OMITTED",
     }
     encoded = json.dumps(semantic_identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
@@ -111,22 +110,29 @@ def normalize_dealer_gex_surface(
 ) -> NormalizedDealerGexSurface:
     """Normalize a full heatmap without treating unavailable evidence as a zero surface."""
 
-    source = {
-        "status": source_http_status,
-        "captured_at": captured_at.isoformat(),
-        "availability": "AVAILABLE" if source_http_status < 400 else "UNAVAILABLE",
-    }
-    normalized = normalize_heatmap_payload(payload, source_status=source)
     envelope = payload if isinstance(payload, dict) else {}
     data = envelope.get("data") if isinstance(envelope.get("data"), dict) else envelope
     data = data if isinstance(data, dict) else {}
-    source_cells = normalized.get("cells") if isinstance(normalized.get("cells"), list) else []
-    vendor_time = _timestamp(normalized.get("generated_at"))
+    meta = envelope.get("_meta") if isinstance(envelope.get("_meta"), dict) else {}
+    cells_value = data.get("cells")
+    source_cells = cells_value if isinstance(cells_value, list) else []
+    vendor_time = _timestamp(data.get("generated_at"))
+    if "truncated" in meta:
+        truncated_value = meta.get("truncated")
+        truncated_source = "_meta"
+    elif "truncated" in data:
+        truncated_value = data.get("truncated")
+        truncated_source = "data"
+    else:
+        truncated_value = None
+        truncated_source = None
     parsed_cells: list[DealerGexCellValue] = []
     invalid_rows = 0
     identities: set[tuple[date, Decimal]] = set()
     duplicate_rows = 0
     missing_net_rows = 0
+    missing_call_rows = 0
+    missing_put_rows = 0
     representative_keys: list[str] = []
     for source_cell in source_cells:
         if not isinstance(source_cell, dict):
@@ -149,6 +155,10 @@ def normalize_dealer_gex_surface(
         put = _decimal(source_cell.get("put_gex_usd"))
         if net is None:
             missing_net_rows += 1
+        if call is None:
+            missing_call_rows += 1
+        if put is None:
+            missing_put_rows += 1
         parsed_cells.append(DealerGexCellValue(expiration, strike, net, call, put))
 
     top_level_keys = sorted(str(key) for key in envelope)
@@ -163,17 +173,46 @@ def normalize_dealer_gex_surface(
         "invalid_cell_count": invalid_rows,
         "duplicate_cell_count": duplicate_rows,
         "missing_net_cell_count": missing_net_rows,
+        "missing_call_gex_cell_count": missing_call_rows,
+        "missing_put_gex_cell_count": missing_put_rows,
         "source_http_status": source_http_status,
-        "session_date_et": normalized.get("session_date_et"),
-        "market_status": normalized.get("market_status"),
-        "vendor_state": normalized.get("state"),
-        "scale": normalized.get("scale"),
+        "session_date_et": data.get("session_date_et"),
+        "market_status": data.get("market_status"),
+        "vendor_state": data.get("state"),
+        "scale": data.get("scale"),
+        "declared_expiration_count": (
+            len(data["expirations"]) if isinstance(data.get("expirations"), list) else None
+        ),
+        "truncated_present": truncated_source is not None,
+        "truncated_source": truncated_source,
+        "truncated_value": truncated_value if isinstance(truncated_value, bool) else None,
+        "vendor_meta": {
+            key: meta.get(key)
+            for key in (
+                "request_id",
+                "cache_hit",
+                "data_freshness_seconds",
+                "rate_limit_remaining",
+                "quota_remaining_pct",
+            )
+            if key in meta
+        },
     }
-    quality = str(normalized.get("availability") or "UNAVAILABLE")
-    safe_error = normalized.get("availability_reason")
-    if quality == "UNAVAILABLE":
+    quality = "AVAILABLE"
+    safe_error: Any = None
+    if source_http_status >= 400:
+        quality = "UNAVAILABLE"
+        safe_error = "SOURCE_REQUEST_UNAVAILABLE"
         parsed_cells = []
-    elif bool(normalized.get("truncated")) or invalid_rows or duplicate_rows:
+    elif not data:
+        quality = "UNAVAILABLE"
+        safe_error = "MISSING_PAYLOAD"
+        parsed_cells = []
+    elif not isinstance(cells_value, list):
+        quality = "UNAVAILABLE"
+        safe_error = "MALFORMED_OR_MISSING_CELLS"
+        parsed_cells = []
+    elif truncated_value is True or invalid_rows or duplicate_rows:
         quality = "INCOMPLETE_OR_TRUNCATED"
         safe_error = "INCOMPLETE_OR_TRUNCATED_SURFACE"
         parsed_cells = []
@@ -188,6 +227,12 @@ def normalize_dealer_gex_surface(
     elif missing_net_rows:
         quality = "AVAILABLE_DEGRADED"
         safe_error = "PARTIAL_NET_GEX_VALUES"
+    elif str(data.get("state")).lower() == "degraded":
+        quality = "AVAILABLE_DEGRADED"
+        safe_error = "VENDOR_REPORTED_DEGRADED"
+    elif truncated_value is not False:
+        quality = "AVAILABLE_DEGRADED"
+        safe_error = "TRUNCATION_STATUS_MISSING_OR_INVALID"
 
     usable = quality in USABLE_SOURCE_QUALITIES
     identity = (
@@ -198,11 +243,11 @@ def normalize_dealer_gex_surface(
     return NormalizedDealerGexSurface(
         ticker=ticker,
         vendor_observed_at=vendor_time,
-        spot_usd=_decimal(normalized.get("spot_usd")),
+        spot_usd=_decimal(data.get("spot_usd")),
         source_quality=quality,
         availability="AVAILABLE" if usable else "UNAVAILABLE",
         safe_error_code=str(safe_error) if safe_error else None,
-        truncated=bool(normalized.get("truncated")),
+        truncated=truncated_value is True,
         cells=tuple(parsed_cells),
         observation_identity=identity,
         quality_details=details,

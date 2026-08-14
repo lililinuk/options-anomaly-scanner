@@ -39,6 +39,15 @@ Manual and scheduled executions share the same normalization and persistence pat
 checks the XNYS session plan and produces no database or network side effect. Ticker arguments are
 restricted to the configured MAG7 universe.
 
+The production transport request is exactly:
+
+```text
+GET /v1/derived/heatmap/{ticker}/snapshot
+```
+
+No `format` query parameter is sent. The earlier `format=full` request was rejected by the live
+vendor endpoint and is preserved only in historical failure evidence.
+
 ## Failure and budget semantics
 
 Tickers are attempted sequentially once, with `max_retries=0` and `max_concurrency=1`. One ticker
