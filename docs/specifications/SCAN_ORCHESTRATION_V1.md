@@ -87,6 +87,18 @@ over a source-aligned v1 evaluation, v2 state, and preserved ticker Heatmap. It 
 `v3_research_workspace` API property and cannot initiate Nightwatch transport or change Phase 2A
 route selection.
 
+## Phase 2B v3.1 Dealer/GEX archive
+
+The additive archive is documented in
+`docs/specifications/PHASE2B_V31_ORCHESTRATION.md`. A durable external scheduler invokes one
+sequential MAG7 capture near `15:30 America/New_York` on XNYS sessions. The archive has independent
+seven-attempt/seven-unit bounds, zero retries, per-ticker failure isolation, vendor-time
+observation identity, and no retention deletion. It does not run during an interactive MAG7 scan.
+
+New v3.1 workspaces may read a usable archived surface only when vendor and capture timestamps are
+both no later than the candidate evaluation. Historical v3.0 rows remain unchanged, and the
+candidate Dealer analysis remains anchor plus nearest previous/next expiry.
+
 ## Scheduling requirement
 
 Use a durable platform scheduler (cron, systemd timer, managed job scheduler, or equivalent) to run

@@ -35,12 +35,16 @@ cd backend
 python -m app.cli refresh-metadata
 python -m app.cli archive-mag7-oi
 python -m app.cli archive-mag7-daily
+python -m app.cli capture-dealer-gex-archive --dry-run
+python -m app.cli capture-dealer-gex-archive
 python -m app.cli run-mag7-scan
 ```
 
 `refresh-metadata` calls only the metadata discovery route. `archive-mag7-oi` remains the backwards-compatible idempotent OI archive. `archive-mag7-daily` independently runs Daily OI, Daily Activity, and Daily OI Change Radar subjobs. `run-mag7-scan` refreshes expiry activity and reuses persisted OI, Radar, and Persistent evidence; it does not call OI Change Radar or rebuild the archive. None of these commands prints the API key.
 
-The repository intentionally does not run a durable in-process scheduler. Deployment must invoke `archive-mag7-daily` externally at `Asia/Singapore` 12:00. Capture time, vendor observation date/as-of, and New York market date are stored separately; same-session identities do not duplicate history.
+`capture-dealer-gex-archive` is the independent Phase 2B v3.1 append-only full-surface Dealer/GEX capture. It runs MAG7 sequentially with zero retries, accepts `--ticker NVDA` for a bounded diagnostic, and never computes a trading recommendation or actionability result.
+
+The repository intentionally does not run a durable in-process scheduler. Deployment must invoke `archive-mag7-daily` externally at `Asia/Singapore` 12:00 and `capture-dealer-gex-archive --scheduled` near `America/New_York` 15:30 on XNYS sessions. Capture time, vendor observation date/as-of, and New York market date are stored separately; same vendor observations do not duplicate history.
 
 Run tests:
 

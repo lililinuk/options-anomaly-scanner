@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     phase2b_atr_window: int = Field(default=14, ge=1)
     phase2b_rolling_range_window: int = Field(default=20, ge=1)
 
+    # Phase 2B v3.1 Dealer/GEX capture is invoked by an external durable scheduler. The
+    # process itself never starts an in-process background scheduler.
+    dealer_gex_archive_enabled: bool = True
+    dealer_gex_archive_config_version: str = "2026-08-14.v3.1"
+    dealer_gex_archive_local_time: str = "15:30"
+    dealer_gex_archive_max_network_attempts: int = Field(default=7, ge=1, le=50)
+    dealer_gex_archive_max_consumed_units: int = Field(default=7, ge=1, le=50)
+
     market_timezone: str = "America/New_York"
     persisted_timezone: str = "UTC"
 

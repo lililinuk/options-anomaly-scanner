@@ -10,6 +10,10 @@ from app.confirmation.service import Phase2bContextService
 from app.confirmation.state_v2 import Phase2bV2StateService
 from app.confirmation.workspace_v3 import Phase2bV3WorkspaceService
 from app.db.session import get_session_factory
+from app.dealer_archive.service import (
+    DealerGexArchiveConcurrentError,
+    DealerGexArchiver,
+)
 from app.metadata.service import ApiUsageCollector, refresh_metadata
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
@@ -65,6 +69,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build append-only Phase 2B v3 research workspaces from persisted evidence only",
     )
     phase2b_v3.add_argument("--contract", action="append", required=True)
+    dealer_archive = subcommands.add_parser(
+        "capture-dealer-gex-archive",
+        help="Capture one idempotent, sequential full Dealer/GEX surface per MAG7 ticker",
+    )
+    dealer_archive.add_argument(
+        "--ticker",
+        action="append",
+        help="Limit capture to one or more configured MAG7 tickers",
+    )
+    dealer_archive.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the market-session plan without persistence or Nightwatch requests",
+    )
+    dealer_archive.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Record that the durable external scheduler invoked this run",
+    )
     return parser
 
 
@@ -308,6 +331,51 @@ def run_phase2b_v3_workspaces(contracts: list[str]) -> int:
     return 0 if not summary.missing else 4
 
 
+async def run_dealer_gex_archive(
+    tickers: list[str] | None, *, dry_run: bool, scheduled: bool
+) -> int:
+    settings = get_settings()
+    try:
+        with get_session_factory()() as session:
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=1,
+            ) as client:
+                summary = await DealerGexArchiver(session, client).execute(
+                    tickers=tuple(ticker.upper() for ticker in tickers) if tickers else None,
+                    trigger="external_scheduler" if scheduled else "cli",
+                    dry_run=dry_run,
+                )
+    except DealerGexArchiveConcurrentError as error:
+        print(f"Dealer/GEX archive not started: {error}", file=sys.stderr)
+        return 4
+    except (SQLAlchemyError, NightwatchError, RuntimeError, ValueError) as error:
+        print(f"Dealer/GEX archive failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    print(
+        f"Dealer/GEX archive: archive_run_id={summary.archive_run_id} "
+        f"status={summary.status} market_date={summary.market_date} "
+        f"intended_slot={summary.intended_capture_slot} "
+        f"tickers_attempted={summary.tickers_attempted} "
+        f"tickers_succeeded={summary.tickers_succeeded} "
+        f"tickers_failed={summary.tickers_failed} reused={summary.observations_reused} "
+        f"paid_units={summary.consumed_quota_units} "
+        f"network_attempts={summary.network_attempts} "
+        f"quota_remaining={summary.quota_remaining_after} dry_run={summary.dry_run}"
+    )
+    for row in summary.tickers:
+        print(
+            f"  ticker={row['ticker']} status={row['status']} "
+            f"http_status={row.get('http_status')} quality={row.get('source_quality')} "
+            f"vendor_observed_at={row.get('vendor_observed_at')} "
+            f"expirations={row.get('expirations')} cells={row.get('cells')}"
+        )
+    return 0 if summary.status in {"COMPLETE", "DRY_RUN_READY"} else 4
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "refresh-metadata":
@@ -332,6 +400,14 @@ def main() -> int:
         return run_phase2b_v2_states(args.contract)
     if args.command == "build-phase2b-v3-workspaces":
         return run_phase2b_v3_workspaces(args.contract)
+    if args.command == "capture-dealer-gex-archive":
+        return asyncio.run(
+            run_dealer_gex_archive(
+                args.ticker,
+                dry_run=args.dry_run,
+                scheduled=args.scheduled,
+            )
+        )
     return 1
 
 

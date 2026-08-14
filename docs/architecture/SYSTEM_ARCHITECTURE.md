@@ -152,3 +152,16 @@ transport layer is not imported by `app.confirmation.workspace_v3`; the CLI read
 Normalized GEX structural results reference the existing ticker context and raw evidence IDs rather
 than duplicating the full vendor payload. FastAPI exposes the result additively, and the Next.js
 browser surface uses only the fixed backend proxy.
+
+# Phase 2B v3.1 Dealer/GEX archive
+
+The independent `app.dealer_archive` layers separate XNYS session planning, full-surface
+normalization, append-only PostgreSQL persistence, and sequential Nightwatch orchestration. A
+durable external scheduler invokes the CLI; FastAPI does not run a background scheduler. Usable
+surfaces are stored as snapshot plus expiration/strike cells, while incomplete and unavailable
+attempts remain explicit and cannot become a zero surface.
+
+New v3.1 candidate workspaces query the archive repository with both vendor-time and capture-time
+cutoffs. This database read does not import or invoke transport. The full archive supports future
+calibration, but current candidate analysis remains anchor plus nearest previous/next expiry and
+does not compute outcomes or actionability.

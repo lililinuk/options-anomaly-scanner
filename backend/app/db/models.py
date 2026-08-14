@@ -827,6 +827,140 @@ class Phase2bV3ResearchWorkspace(Base):
     adjacent_expiry_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class DealerGexArchiveRun(Base):
+    """One externally triggered, append-only MAG7 Dealer/GEX capture run."""
+
+    __tablename__ = "dealer_gex_archive_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "ny_market_date",
+            "intended_capture_slot",
+            "scope_key",
+            name="uq_dealer_gex_run_market_date_slot_scope",
+        ),
+        Index("ix_dealer_gex_run_started", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(48), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ny_market_date: Mapped[date | None] = mapped_column(Date)
+    intended_capture_slot: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    market_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    universe: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    tickers_attempted: Mapped[int] = mapped_column(Integer, default=0)
+    tickers_succeeded: Mapped[int] = mapped_column(Integer, default=0)
+    tickers_failed: Mapped[int] = mapped_column(Integer, default=0)
+    observations_reused: Mapped[int] = mapped_column(Integer, default=0)
+    usable_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    degraded_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    unavailable_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    incomplete_snapshots: Mapped[int] = mapped_column(Integer, default=0)
+    network_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    http_successes: Mapped[int] = mapped_column(Integer, default=0)
+    http_failures: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_quota_units: Mapped[int] = mapped_column(Integer, default=0)
+    quota_remaining_before: Mapped[int | None] = mapped_column(Integer)
+    quota_remaining_after: Mapped[int | None] = mapped_column(Integer)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class DealerGexSnapshot(Base):
+    """A vendor Dealer/GEX surface or an explicitly unavailable capture attempt."""
+
+    __tablename__ = "dealer_gex_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "archive_run_id", "ticker", name="uq_dealer_gex_snapshot_run_ticker"
+        ),
+        UniqueConstraint(
+            "observation_identity", name="uq_dealer_gex_snapshot_observation_identity"
+        ),
+        Index(
+            "ix_dealer_gex_snapshot_ticker_vendor_time",
+            "ticker",
+            "vendor_observed_at",
+        ),
+        Index(
+            "ix_dealer_gex_snapshot_ticker_captured",
+            "ticker",
+            "captured_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    archive_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dealer_gex_archive_runs.id"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    vendor_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    spot_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    source_quality: Mapped[str] = mapped_column(String(40), nullable=False)
+    availability: Mapped[str] = mapped_column(String(24), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(256), nullable=False)
+    capability: Mapped[str] = mapped_column(String(96), nullable=False)
+    endpoint_parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_request_id: Mapped[str | None] = mapped_column(String(128))
+    raw_payload_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("raw_vendor_payloads.id")
+    )
+    source_http_status: Mapped[int | None] = mapped_column(Integer)
+    safe_error_code: Mapped[str | None] = mapped_column(String(96))
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    cell_count: Mapped[int] = mapped_column(Integer, default=0)
+    expiration_count: Mapped[int] = mapped_column(Integer, default=0)
+    surface_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    observation_identity: Mapped[str | None] = mapped_column(String(64))
+    is_analytical_observation: Mapped[bool] = mapped_column(Boolean, default=False)
+    quality_details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class DealerGexSnapshotCell(Base):
+    """One immutable expiration/strike cell from a usable archived surface."""
+
+    __tablename__ = "dealer_gex_snapshot_cells"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id",
+            "expiration",
+            "strike",
+            name="uq_dealer_gex_cell_snapshot_expiry_strike",
+        ),
+        Index(
+            "ix_dealer_gex_cell_expiry_strike",
+            "expiration",
+            "strike",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dealer_gex_snapshots.id"), nullable=False
+    )
+    expiration: Mapped[date] = mapped_column(Date, nullable=False)
+    strike: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    net_dealer_gex_usd: Mapped[Decimal | None] = mapped_column(Numeric(32, 6))
+    call_gex_usd: Mapped[Decimal | None] = mapped_column(Numeric(32, 6))
+    put_gex_usd: Mapped[Decimal | None] = mapped_column(Numeric(32, 6))
+
+
 class SignalDetection(Base):
     """Future detection record: detection fields are append-only historical facts."""
 

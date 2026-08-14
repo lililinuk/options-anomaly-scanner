@@ -1,4 +1,6 @@
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -235,3 +237,35 @@ def test_concurrent_mag7_scan_is_rejected(monkeypatch) -> None:  # type: ignore[
         app.dependency_overrides.clear()
     assert response.status_code == 409
     assert "already running" in response.json()["detail"]
+
+
+def test_dealer_gex_history_api_reads_persisted_diagnostics_only(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    run = SimpleNamespace(
+        id=uuid4(), status="PARTIAL",
+        started_at=datetime(2026, 8, 14, 19, 30, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 14, 19, 31, tzinfo=timezone.utc),
+        ny_market_date=date(2026, 8, 14), intended_capture_slot="15:30",
+        market_timezone="America/New_York", tickers_attempted=7,
+        tickers_succeeded=6, tickers_failed=1, network_attempts=7,
+        consumed_quota_units=6, specification_version="signal_spec_v3.1_phase2b",
+    )
+    monkeypatch.setattr(
+        "app.api.routes.dealer_gex.dealer_gex_history_coverage",
+        lambda _session, tickers: [
+            {"ticker": ticker, "distinct_valid_observations": 1} for ticker in tickers
+        ],
+    )
+    app.dependency_overrides[get_db_session] = lambda: SimpleNamespace(
+        scalar=lambda _statement: run
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/v1/dealer-gex/history")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["archive"]["consumed_quota_units"] == 6
+    assert len(payload["history_coverage"]) == 7
+    assert payload["semantics"]["unavailable_is_zero"] is False
+    assert payload["semantics"]["analysis_labels_computed"] is False

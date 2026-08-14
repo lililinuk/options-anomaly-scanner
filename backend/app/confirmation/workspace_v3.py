@@ -12,18 +12,20 @@ from sqlalchemy.orm import Session
 from app.core.time import utc_now
 from app.db.models import (
     ContractScanObservation,
+    DealerGexSnapshot,
     Phase2bCandidateEvaluation,
     Phase2bCandidateState,
     Phase2bTickerContextSnapshot,
     Phase2bV3ResearchWorkspace,
 )
+from app.dealer_archive.repository import best_archived_surface_at_or_before
 
-PHASE2B_V3_SPEC_VERSION: Final = "signal_spec_v3.0_phase2b"
+PHASE2B_V3_SPEC_VERSION: Final = "signal_spec_v3.1_phase2b"
 PRIMARY_FLOOR_RULE_VERSION: Final = "dealer_gex_primary_floor_v1"
 PRIMARY_UPPER_NODE_RULE_VERSION: Final = "dealer_gex_primary_upper_node_v1"
 BELOW_FLOOR_PATH_RULE_VERSION: Final = "dealer_gex_below_floor_path_v1"
 ADJACENT_EXPIRY_RULE_VERSION: Final = "dealer_gex_adjacent_expiry_context_v1"
-WORKSPACE_CONFIG_VERSION: Final = "phase2b_v3_research_workspace_v1"
+WORKSPACE_CONFIG_VERSION: Final = "phase2b_v31_research_workspace_v2"
 USABLE_DEALER_QUALITIES: Final = frozenset({"AVAILABLE", "AVAILABLE_DEGRADED"})
 
 
@@ -365,7 +367,10 @@ def build_workspace_payload(
     evaluation: Phase2bCandidateEvaluation,
     context: Phase2bTickerContextSnapshot,
     state: Phase2bCandidateState,
-    *, contract: ContractScanObservation | None = None,
+    *,
+    contract: ContractScanObservation | None = None,
+    dealer_heatmap: dict[str, Any] | None = None,
+    dealer_archive_snapshot: DealerGexSnapshot | None = None,
 ) -> dict[str, Any]:
     phase2a = evaluation.phase2a_evidence or {}
     positioning = state.positioning_state or {}
@@ -374,11 +379,12 @@ def build_workspace_payload(
     price["audit"] = _price_audit(price)
     volatility = dict(state.volatility_state or {})
     volatility["semantics"] = "FACTUAL_VOLATILITY_CONTEXT_NOT_DIRECTION_OR_RECOMMENDATION"
-    spot = context.dealer_heatmap.get("spot_usd") if context.dealer_heatmap else None
+    dealer_source = dealer_heatmap if dealer_heatmap is not None else context.dealer_heatmap
+    spot = dealer_source.get("spot_usd") if dealer_source else None
     if spot is None:
         spot = context.stock_state.get("current_price_usd") if context.stock_state else None
     dealer = build_dealer_gex_structure(
-        context.dealer_heatmap or {},
+        dealer_source or {},
         anchor_expiration=evaluation.expiration,
         spot=spot,
     )
@@ -429,18 +435,52 @@ def build_workspace_payload(
             },
         },
     }
+    raw_payload_ids = list(context.raw_payload_ids or [])
+    source_request_ids = list(context.source_request_ids or [])
+    if dealer_archive_snapshot and dealer_archive_snapshot.raw_payload_id:
+        raw_payload_ids.append(str(dealer_archive_snapshot.raw_payload_id))
+    if dealer_archive_snapshot and dealer_archive_snapshot.source_request_id:
+        source_request_ids.append(dealer_archive_snapshot.source_request_id)
+    source_timestamps = {
+        **(context.source_timestamps or {}),
+        **(evaluation.source_timestamps or {}),
+    }
+    if dealer_archive_snapshot:
+        source_timestamps.update(
+            {
+                "dealer_gex_archive_vendor_observed_at": (
+                    dealer_archive_snapshot.vendor_observed_at.isoformat()
+                    if dealer_archive_snapshot.vendor_observed_at
+                    else None
+                ),
+                "dealer_gex_archive_captured_at": (
+                    dealer_archive_snapshot.captured_at.isoformat()
+                ),
+            }
+        )
     provenance = {
         "source_v2_state_id": str(state.id),
         "candidate_evaluation_id": str(evaluation.id),
         "ticker_context_id": str(context.id),
         "contract_observation_id": str(contract.id) if contract else None,
-        "dealer_snapshot_reference": str(context.id),
-        "raw_payload_ids": list(context.raw_payload_ids or []),
-        "source_request_ids": list(context.source_request_ids or []),
-        "source_timestamps": {
-            **(context.source_timestamps or {}),
-            **(evaluation.source_timestamps or {}),
-        },
+        "dealer_snapshot_reference": (
+            str(dealer_archive_snapshot.id) if dealer_archive_snapshot else str(context.id)
+        ),
+        "dealer_snapshot_source": (
+            "DEALER_GEX_ARCHIVE"
+            if dealer_archive_snapshot
+            else "PHASE2B_TICKER_CONTEXT"
+        ),
+        "dealer_snapshot_source_time_eligible": (
+            dealer_archive_snapshot.captured_at <= evaluation.evaluated_at
+            and dealer_archive_snapshot.vendor_observed_at is not None
+            and dealer_archive_snapshot.vendor_observed_at <= evaluation.evaluated_at
+            if dealer_archive_snapshot
+            else True
+        ),
+        "raw_payload_ids": list(dict.fromkeys(raw_payload_ids)),
+        "source_request_ids": list(dict.fromkeys(source_request_ids)),
+        "source_timestamps": source_timestamps,
         "source_context_specification_version": evaluation.specification_version,
         "source_v2_specification_version": state.specification_version,
     }
@@ -522,8 +562,19 @@ class Phase2bV3WorkspaceService:
                 .where(ContractScanObservation.contract_symbol == symbol)
                 .order_by(desc(ContractScanObservation.observed_at)).limit(1)
             )
+            archived = best_archived_surface_at_or_before(
+                self.session,
+                ticker=evaluation.ticker,
+                as_of=evaluation.evaluated_at,
+            )
+            archive_snapshot, archive_heatmap = archived if archived else (None, None)
             payload = build_workspace_payload(
-                evaluation, context, state, contract=contract
+                evaluation,
+                context,
+                state,
+                contract=contract,
+                dealer_heatmap=archive_heatmap,
+                dealer_archive_snapshot=archive_snapshot,
             )
             row = Phase2bV3ResearchWorkspace(
                 source_v2_state_id=state.id,
