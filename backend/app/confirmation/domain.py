@@ -304,29 +304,116 @@ def map_term_structure(
     }
 
 
+def normalize_heatmap_payload(
+    payload: dict[str, Any] | None,
+    *,
+    source_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make optional Heatmap collections iterable without claiming a usable surface."""
+
+    source = source_status if isinstance(source_status, dict) else {}
+    envelope = payload if isinstance(payload, dict) else {}
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else envelope
+    data = data if isinstance(data, dict) else {}
+    meta = envelope.get("_meta") if isinstance(envelope.get("_meta"), dict) else {}
+    cells_value = data.get("cells")
+    rows_value = data.get("row_stacks")
+    collections_usable = (
+        isinstance(cells_value, list)
+        and isinstance(rows_value, list)
+        and all(isinstance(row, dict) for row in [*cells_value, *rows_value])
+    )
+    source_failed = (
+        source.get("availability") == "UNAVAILABLE"
+        or isinstance(source.get("status"), int) and source["status"] >= 400
+        or data.get("availability") == "UNAVAILABLE"
+    )
+    unavailable_reason = None
+    if source_failed:
+        unavailable_reason = source.get("error_code") or data.get("availability_reason")
+        unavailable_reason = unavailable_reason or "SOURCE_REQUEST_UNAVAILABLE"
+    elif not data:
+        unavailable_reason = "MISSING_PAYLOAD"
+    elif not collections_usable:
+        unavailable_reason = "MALFORMED_OR_MISSING_COLLECTIONS"
+
+    truncated = bool(meta.get("truncated") or data.get("truncated"))
+    vendor_state = data.get("state")
+    explicit_availability = data.get("availability")
+    if unavailable_reason:
+        availability = "UNAVAILABLE"
+    elif truncated:
+        availability = "INCOMPLETE_OR_TRUNCATED"
+    elif (
+        explicit_availability == "AVAILABLE_DEGRADED"
+        or str(vendor_state).lower() == "degraded"
+    ):
+        availability = "AVAILABLE_DEGRADED"
+    else:
+        availability = "AVAILABLE"
+
+    normalized = {
+        key: data.get(key)
+        for key in (
+            "ticker",
+            "generated_at",
+            "session_date_et",
+            "market_status",
+            "state",
+            "spot_usd",
+            "expirations",
+            "strikes_usd",
+            "scale",
+        )
+    }
+    normalized.update(
+        {
+            "availability": availability,
+            "availability_reason": unavailable_reason,
+            "source_http_status": source.get("status", data.get("source_http_status")),
+            "source_error_code": source.get("error_code", data.get("source_error_code")),
+            "capture_timestamp": source.get(
+                "captured_at", data.get("capture_timestamp")
+            ),
+            "truncated": truncated,
+            # Safe for internal control flow; availability preserves UNAVAILABLE != empty surface.
+            "cells": [row for row in cells_value if isinstance(row, dict)]
+            if collections_usable
+            else [],
+            "row_stacks": [row for row in rows_value if isinstance(row, dict)]
+            if collections_usable
+            else [],
+        }
+    )
+    return normalized
+
+
 def evaluate_heatmap(
-    payload: dict[str, Any], *, expiration: date, strike: Decimal | float,
+    payload: dict[str, Any] | None, *, expiration: date, strike: Decimal | float,
     current_price: float | None,
 ) -> dict[str, Any]:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
-    cells = [row for row in data.get("cells", []) if isinstance(row, dict)]
-    rows = [row for row in data.get("row_stacks", []) if isinstance(row, dict)]
+    data = normalize_heatmap_payload(payload)
+    cells = data["cells"]
+    rows = data["row_stacks"]
+    available = data["availability"] != "UNAVAILABLE"
     target_expiry, target_strike = expiration.isoformat(), float(strike)
     exact = next(
         (row for row in cells if row.get("expiration") == target_expiry
          and _number(row.get("strike_usd")) == target_strike), None,
-    )
+    ) if available else None
     candidate_row = next(
         (row for row in rows if _number(row.get("strike_usd")) == target_strike), None
-    )
-    truncated = bool(meta.get("truncated") or data.get("truncated"))
-    vendor_state = data.get("state")
-    quality = "INCOMPLETE_OR_TRUNCATED" if truncated else (
-        "AVAILABLE_DEGRADED" if str(vendor_state).lower() == "degraded" else
-        "AVAILABLE" if data else "UNAVAILABLE"
-    )
-    ranked = sorted(rows, key=lambda row: (row.get("rank") is None, row.get("rank", 10**9)))[:5]
+    ) if available else None
+    quality = data["availability"]
+
+    def rank_key(row: dict[str, Any]) -> tuple[bool, float]:
+        rank = _number(row.get("rank"))
+        return rank is None, rank if rank is not None else float("inf")
+
+    ranked = sorted(
+        rows,
+        key=rank_key,
+    )[:5]
     top_rows = [
         {
             **row,
@@ -350,13 +437,34 @@ def evaluate_heatmap(
         )
 
     return {
-        "availability": "DEGRADED" if quality != "AVAILABLE" and data else quality,
-        "quality": quality, "vendor_state": vendor_state, "generated_at": data.get("generated_at"),
+        "availability": quality,
+        "availability_reason": data.get("availability_reason"),
+        "source_http_status": data.get("source_http_status"),
+        "source_error_code": data.get("source_error_code"),
+        "quality": quality, "vendor_state": data.get("state"),
+        "generated_at": data.get("generated_at"),
         "session_date_et": data.get("session_date_et"), "market_status": data.get("market_status"),
-        "spot_usd": _number(data.get("spot_usd")), "truncated": truncated,
+        "spot_usd": _number(data.get("spot_usd")), "truncated": data["truncated"],
         "cell_count": len(cells), "row_count": len(rows),
-        "candidate_heatmap_cell_status": "EXACT_MATCH" if exact else "NOT_PRESENT",
+        "candidate_heatmap_cell_status": (
+            "UNAVAILABLE" if not available else "EXACT_MATCH" if exact else "NOT_PRESENT"
+        ),
+        "row_stack_status": (
+            "ROW_UNAVAILABLE"
+            if not available
+            else "ROW_EXACT_MATCH"
+            if candidate_row
+            else "ROW_NOT_PRESENT"
+        ),
         "candidate_cell": exact, "candidate_row_stack": candidate_row,
+        "candidate_net_gex_usd": _number(exact.get("net_dealer_gex_usd")) if exact else None,
+        "candidate_call_gex_usd": _number(exact.get("call_gex_usd")) if exact else None,
+        "candidate_put_gex_usd": _number(exact.get("put_gex_usd")) if exact else None,
+        "row_net_gex_usd": _number(candidate_row.get("row_net_wall_gex_usd"))
+        if candidate_row else None,
+        "row_abs_gex_usd": _number(candidate_row.get("row_abs_wall_gex_usd"))
+        if candidate_row else None,
+        "vendor_row_rank": candidate_row.get("rank") if candidate_row else None,
         "top_vendor_ranked_rows": top_rows,
         "nearest_positive_net_row": nearest(positive),
         "nearest_negative_net_row": nearest(negative),

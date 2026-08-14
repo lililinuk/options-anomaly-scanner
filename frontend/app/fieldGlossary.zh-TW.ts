@@ -121,6 +121,7 @@ export const fieldGlossary = {
   candidate_gex_cell: entry("候選 GEX 儲存格", "Candidate GEX Cell", "只有同一筆 Heatmap cell 同時精確符合候選 expiration 與 strike 才成立。", "expiration exact equality 且 strike numeric equality。", "EXACT_MATCH 才顯示 net/call/put GEX。", "只在 axes 出現並不構成候選 cell；缺失保持 NULL。"),
   row_stack_phase2b: entry("履約價列堆疊", "Row Stack", "Heatmap 對某履約價的跨到期日列聚合與供應商排名。", "直接保留 row_net_wall_gex_usd、row_abs_wall_gex_usd 與 vendor rank。", "是 ticker-wide、多到期日履約價背景。", "與候選 expiration×strike cell 不同。"),
   degraded_phase2b: entry("降級資料", "Degraded", "供應商有回傳資料，但標示其狀態或完整性降低／不確定。", "保留資料並將 quality 標為 AVAILABLE_DEGRADED。", "仍可研究已回傳證據。", "不得推論未回傳 cell，也不計算需要完整 surface 的集中度。"),
+  dealer_unavailable_phase2b: entry("Dealer/GEX 資料不可用", "Dealer/GEX Unavailable", "本次評估沒有可用的 Heatmap surface。", "candidate cell 與 row stack 狀態分別為 UNAVAILABLE 與 ROW_UNAVAILABLE，所有 GEX 數值保持 NULL。", "候選與其他 Phase 2B context 仍然保留。", "不可顯示為零，也不可等同於 usable surface 中的 NOT_PRESENT。"),
   direction_unresolved: entry("方向未解析", "Direction Unresolved", "現有證據無法確立經濟發起部位是 long、short、spread 或 hedge。", "Phase 2B v1 固定保留 UNRESOLVED。", "將 positioning significance 與 directional interpretation 分離。", "Call、正 ΔOI、大 Premium、價格或 GEX 正負都不能單獨解決方向。"),
   last_scan: entry("最近掃描", "Last Scan", "此列結果所屬掃描的完成或開始時間。"),
 } satisfies Record<string, GlossaryEntry>;

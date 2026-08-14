@@ -22,7 +22,15 @@ def test_application_health_is_utc_and_does_not_contact_vendor() -> None:
 def test_candidate_confirmation_reads_persisted_context_only(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     expected = {
         "candidate": {"contract_symbol": "NVDA260821C00220000", "direction": "UNRESOLVED"},
-        "specification_version": "signal_spec_v1.0_phase2b",
+        "dealer": {
+            "availability": "UNAVAILABLE",
+            "candidate_heatmap_cell_status": "UNAVAILABLE",
+            "candidate_net_gex_usd": None,
+            "row_stack_status": "ROW_UNAVAILABLE",
+            "row_net_gex_usd": None,
+            "vendor_row_rank": None,
+        },
+        "specification_version": "signal_spec_v1.2_phase2b",
     }
     monkeypatch.setattr(
         "app.api.routes.scans.latest_candidate_context", lambda _session, _symbol: expected

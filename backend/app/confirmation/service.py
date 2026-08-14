@@ -19,6 +19,7 @@ from app.confirmation.domain import (
     calculate_price_context,
     evaluate_heatmap,
     map_term_structure,
+    normalize_heatmap_payload,
     normalize_stock_state,
     strike_location,
 )
@@ -139,6 +140,7 @@ class Phase2bContextService:
             select(Phase2bTickerContextSnapshot)
             .where(
                 Phase2bTickerContextSnapshot.ticker == ticker,
+                Phase2bTickerContextSnapshot.specification_version == PHASE2B_SPEC_VERSION,
                 Phase2bTickerContextSnapshot.config_version == self.config.version,
                 Phase2bTickerContextSnapshot.config_hash == self.config.configuration_hash,
                 Phase2bTickerContextSnapshot.created_at >= cutoff,
@@ -158,7 +160,7 @@ class Phase2bContextService:
     def _reprocess_ticker_context(
         self, source: Phase2bTickerContextSnapshot
     ) -> Phase2bTickerContextSnapshot | None:
-        """Append v1.1 normalization from preserved raw OHLC without a vendor request."""
+        """Append current normalization from preserved raw OHLC without a vendor request."""
 
         ohlc_payload: dict[str, Any] | None = None
         for raw_id in source.raw_payload_ids:
@@ -174,6 +176,17 @@ class Phase2bContextService:
         if ohlc_payload is None:
             return None
         price = self._price_context(ohlc_payload)
+        heat = normalize_heatmap_payload(
+            {"data": source.dealer_heatmap},
+            source_status=source.endpoint_statuses.get("dealer_heatmap"),
+        )
+        endpoint_statuses = {**source.endpoint_statuses}
+        if "dealer_heatmap" in endpoint_statuses:
+            endpoint_statuses["dealer_heatmap"] = {
+                **endpoint_statuses["dealer_heatmap"],
+                "analytical_availability": heat["availability"],
+                "availability_reason": heat["availability_reason"],
+            }
         row = Phase2bTickerContextSnapshot(
             ticker=source.ticker,
             created_at=utc_now(),
@@ -185,12 +198,15 @@ class Phase2bContextService:
             price_context=price,
             iv_rank=source.iv_rank,
             term_structure=source.term_structure,
-            dealer_heatmap=source.dealer_heatmap,
-            source_timestamps=source.source_timestamps,
+            dealer_heatmap=heat,
+            source_timestamps={
+                **source.source_timestamps,
+                "heatmap": heat.get("generated_at") or heat.get("capture_timestamp"),
+            },
             raw_payload_ids=source.raw_payload_ids,
             source_request_ids=source.source_request_ids,
             endpoint_statuses={
-                **source.endpoint_statuses,
+                **endpoint_statuses,
                 "daily_ohlc_reprocessing": {
                     "availability": "AVAILABLE",
                     "source": "PRESERVED_RAW_PAYLOAD",
@@ -218,6 +234,7 @@ class Phase2bContextService:
         ingestor = RawIngestor(self.session)
         for name, template, params in self.ENDPOINTS:
             path = template.format(ticker=ticker)
+            captured_at = utc_now()
             try:
                 result = await self.client.request(
                     "GET", path, params=params, command="phase2b.context",
@@ -238,12 +255,27 @@ class Phase2bContextService:
                 payloads[name] = payload
                 raw_ids.append(str(raw.id))
                 request_ids.append(request_id)
-                statuses[name] = {"status": result.status_code, "availability": "AVAILABLE"}
+                statuses[name] = {
+                    "endpoint": path,
+                    "capability": name,
+                    "ticker": ticker,
+                    "status": result.status_code,
+                    "availability": "AVAILABLE",
+                    "captured_at": captured_at.isoformat(),
+                    "request_id": request_id,
+                }
             except NightwatchError as error:
                 statuses[name] = {
+                    "endpoint": path,
+                    "capability": name,
+                    "ticker": ticker,
                     "status": error.status_code, "availability": "UNAVAILABLE",
                     "error_code": error.code,
+                    "captured_at": captured_at.isoformat(),
+                    "request_id": error.request_id,
                 }
+                if error.request_id:
+                    request_ids.append(error.request_id)
         stock = normalize_stock_state(payloads.get("stock_state", {}))
         price = self._price_context(payloads.get("daily_ohlc", {}))
         iv_data = payloads.get("iv_rank", {}).get("data", {})
@@ -259,17 +291,12 @@ class Phase2bContextService:
             "as_of": term_data.get("as_of"), "nodes": term_data.get("nodes", []),
             "curve_classification": None,
         }
-        heat_payload = payloads.get("dealer_heatmap", {})
-        heat_data = heat_payload.get("data", {})
-        heat_meta = heat_payload.get("_meta", {})
-        heat = {
-            key: heat_data.get(key)
-            for key in (
-                "ticker", "generated_at", "session_date_et", "market_status", "state",
-                "spot_usd", "expirations", "strikes_usd", "cells", "row_stacks", "scale",
-            )
-        }
-        heat["truncated"] = heat_meta.get("truncated", heat_data.get("truncated"))
+        heat = normalize_heatmap_payload(
+            payloads.get("dealer_heatmap"),
+            source_status=statuses.get("dealer_heatmap"),
+        )
+        statuses["dealer_heatmap"]["analytical_availability"] = heat["availability"]
+        statuses["dealer_heatmap"]["availability_reason"] = heat["availability_reason"]
         row = Phase2bTickerContextSnapshot(
             ticker=ticker, created_at=utc_now(), specification_version=PHASE2B_SPEC_VERSION,
             config_version=self.config.version, config_hash=self.config.configuration_hash,
@@ -278,7 +305,7 @@ class Phase2bContextService:
             source_timestamps={
                 "stock_state": stock.get("as_of"), "ohlc": price.get("vendor_as_of"),
                 "iv_rank": iv_rank.get("as_of"), "term_structure": term.get("as_of"),
-                "heatmap": heat.get("generated_at"),
+                "heatmap": heat.get("generated_at") or heat.get("capture_timestamp"),
             },
             raw_payload_ids=raw_ids, source_request_ids=request_ids, endpoint_statuses=statuses,
         )
@@ -337,10 +364,7 @@ class Phase2bContextService:
             term_payload, candidate_expiration=candidate.expiration, contract_iv=contract_iv
         )
         dealer = evaluate_heatmap(
-            {
-                "data": context.dealer_heatmap,
-                "_meta": {"truncated": context.dealer_heatmap.get("truncated")},
-            },
+            {"data": context.dealer_heatmap},
             expiration=candidate.expiration, strike=candidate.strike, current_price=current_price,
         )
         bid = float(chain.bid) if chain and chain.bid is not None else None

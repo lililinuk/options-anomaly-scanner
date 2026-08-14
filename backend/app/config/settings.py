@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # Phase 2B evidence freshness and descriptive tolerances are versioned process
     # configuration. Evaluations persist both this version and its effective snapshot.
-    phase2b_context_config_version: str = "2026-08-13.v1.1"
+    phase2b_context_config_version: str = "2026-08-14.v1.2"
     phase2b_stock_state_freshness_minutes: int = Field(default=15, ge=1)
     phase2b_ohlc_freshness_minutes: int = Field(default=720, ge=1)
     phase2b_iv_rank_freshness_minutes: int = Field(default=720, ge=1)

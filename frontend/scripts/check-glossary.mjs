@@ -30,4 +30,10 @@ for (const required of [
 for (const forbidden of ["api.yehangshe.com", "NIGHTWATCH_API_KEY", "NEXT_PUBLIC_NIGHTWATCH"]) {
   if (dashboard.includes(forbidden)) throw new Error(`Browser code contains forbidden Nightwatch material: ${forbidden}`);
 }
-console.log("Dashboard null-safety and Phase 2A v1.3 route/glossary coverage: passed");
+if (!dashboard.includes("Dealer/GEX：資料不可用")) {
+  throw new Error("Dashboard must disclose unavailable Dealer/GEX context without showing zero");
+}
+if (!source.includes("UNAVAILABLE 與 ROW_UNAVAILABLE")) {
+  throw new Error("Glossary must distinguish unavailable Dealer cell and row semantics");
+}
+console.log("Dashboard null-safety, Dealer/GEX unavailable state, and Phase 2A v1.3 coverage: passed");

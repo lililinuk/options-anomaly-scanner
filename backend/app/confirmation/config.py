@@ -8,7 +8,7 @@ from typing import Final
 
 from app.config import get_settings
 
-PHASE2B_SPEC_VERSION: Final = "signal_spec_v1.1_phase2b"
+PHASE2B_SPEC_VERSION: Final = "signal_spec_v1.2_phase2b"
 
 
 @dataclass(frozen=True)

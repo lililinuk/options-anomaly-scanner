@@ -8,6 +8,7 @@ from app.confirmation.domain import (
     canonical_regular_daily,
     evaluate_heatmap,
     map_term_structure,
+    normalize_heatmap_payload,
     normalize_stock_state,
     strike_location,
 )
@@ -217,6 +218,7 @@ def test_heatmap_requires_exact_joint_cell_and_preserves_sparse_missing() -> Non
         payload, expiration=date(2026, 8, 21), strike=220, current_price=224
     )
     assert result["quality"] == "AVAILABLE_DEGRADED"
+    assert result["availability"] == "AVAILABLE_DEGRADED"
     assert result["candidate_heatmap_cell_status"] == "NOT_PRESENT"
     assert result["candidate_cell"] is None
     assert result["candidate_row_stack"]["rank"] == 1
@@ -235,6 +237,140 @@ def test_heatmap_exact_cell_and_truncation_quality() -> None:
     assert result["quality"] == "INCOMPLETE_OR_TRUNCATED"
     assert result["candidate_heatmap_cell_status"] == "EXACT_MATCH"
     assert result["candidate_cell"] == cell
+    assert result["row_stack_status"] == "ROW_NOT_PRESENT"
+
+
+def test_degraded_exact_cell_and_row_preserve_vendor_values() -> None:
+    cell = {
+        "expiration": "2026-08-21", "strike_usd": 220,
+        "net_dealer_gex_usd": 59652544,
+        "call_gex_usd": 59166863,
+        "put_gex_usd": 485681,
+    }
+    row = {
+        "strike_usd": 220,
+        "row_net_wall_gex_usd": 81553764,
+        "row_abs_wall_gex_usd": 121659202,
+        "rank": 1,
+    }
+    result = evaluate_heatmap(
+        {"data": {"state": "degraded", "cells": [cell], "row_stacks": [row]}},
+        expiration=date(2026, 8, 21), strike=220, current_price=224,
+    )
+    assert result["availability"] == "AVAILABLE_DEGRADED"
+    assert result["candidate_heatmap_cell_status"] == "EXACT_MATCH"
+    assert result["row_stack_status"] == "ROW_EXACT_MATCH"
+    assert result["candidate_cell"] == cell
+    assert result["candidate_row_stack"] == row
+    assert result["candidate_net_gex_usd"] == 59652544
+    assert result["candidate_call_gex_usd"] == 59166863
+    assert result["candidate_put_gex_usd"] == 485681
+    assert result["row_net_gex_usd"] == 81553764
+    assert result["row_abs_gex_usd"] == 121659202
+    assert result["vendor_row_rank"] == 1
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"cells": None, "row_stacks": []},
+        {"cells": [], "row_stacks": None},
+        {"cells": None, "row_stacks": None},
+        {"row_stacks": []},
+        {"cells": []},
+        {"cells": {}, "row_stacks": []},
+        {"cells": [], "row_stacks": "not-a-collection"},
+        {"cells": [None], "row_stacks": []},
+    ],
+)
+def test_heatmap_nullable_omitted_or_malformed_collections_are_unavailable(
+    data: dict[str, object],
+) -> None:
+    result = evaluate_heatmap(
+        {"data": data},
+        expiration=date(2026, 8, 21),
+        strike=220,
+        current_price=224,
+    )
+    assert result["availability"] == "UNAVAILABLE"
+    assert result["candidate_heatmap_cell_status"] == "UNAVAILABLE"
+    assert result["row_stack_status"] == "ROW_UNAVAILABLE"
+    assert result["candidate_cell"] is None
+    assert result["candidate_row_stack"] is None
+    assert result["candidate_net_gex_usd"] is None
+    assert result["candidate_call_gex_usd"] is None
+    assert result["candidate_put_gex_usd"] is None
+    assert result["row_net_gex_usd"] is None
+    assert result["row_abs_gex_usd"] is None
+    assert result["vendor_row_rank"] is None
+
+
+def test_http_400_heatmap_normalizes_to_safe_structured_unavailable_state() -> None:
+    normalized = normalize_heatmap_payload(
+        None,
+        source_status={
+            "status": 400,
+            "availability": "UNAVAILABLE",
+            "error_code": "VALIDATION_ERROR",
+            "captured_at": "2026-08-14T01:02:03Z",
+        },
+    )
+    assert normalized["availability"] == "UNAVAILABLE"
+    assert normalized["availability_reason"] == "VALIDATION_ERROR"
+    assert normalized["source_http_status"] == 400
+    assert normalized["source_error_code"] == "VALIDATION_ERROR"
+    assert normalized["cells"] == []
+    assert normalized["row_stacks"] == []
+
+    result = evaluate_heatmap(
+        {"data": normalized},
+        expiration=date(2026, 8, 21),
+        strike=220,
+        current_price=224,
+    )
+    assert result["availability"] == "UNAVAILABLE"
+    assert result["source_http_status"] == 400
+    assert result["candidate_heatmap_cell_status"] == "UNAVAILABLE"
+
+
+def test_empty_valid_surface_is_not_unavailable_or_exact_cell_missing() -> None:
+    result = evaluate_heatmap(
+        {"data": {"cells": [], "row_stacks": []}},
+        expiration=date(2026, 8, 21),
+        strike=220,
+        current_price=224,
+    )
+    assert result["availability"] == "AVAILABLE"
+    assert result["candidate_heatmap_cell_status"] == "NOT_PRESENT"
+    assert result["row_stack_status"] == "ROW_NOT_PRESENT"
+
+
+def test_unavailable_not_present_and_exact_zero_gex_remain_distinct() -> None:
+    unavailable = evaluate_heatmap(
+        None, expiration=date(2026, 8, 21), strike=220, current_price=224
+    )
+    missing = evaluate_heatmap(
+        {"data": {"cells": [], "row_stacks": []}},
+        expiration=date(2026, 8, 21), strike=220, current_price=224,
+    )
+    zero = evaluate_heatmap(
+        {"data": {"cells": [{
+            "expiration": "2026-08-21", "strike_usd": 220,
+            "net_dealer_gex_usd": 0, "call_gex_usd": 0, "put_gex_usd": 0,
+        }], "row_stacks": [{
+            "strike_usd": 220, "row_net_wall_gex_usd": 0,
+            "row_abs_wall_gex_usd": 0, "rank": 4,
+        }]}},
+        expiration=date(2026, 8, 21), strike=220, current_price=224,
+    )
+    assert unavailable["candidate_heatmap_cell_status"] == "UNAVAILABLE"
+    assert unavailable["candidate_net_gex_usd"] is None
+    assert missing["candidate_heatmap_cell_status"] == "NOT_PRESENT"
+    assert missing["candidate_net_gex_usd"] is None
+    assert zero["candidate_heatmap_cell_status"] == "EXACT_MATCH"
+    assert zero["candidate_net_gex_usd"] == 0
+    assert zero["row_stack_status"] == "ROW_EXACT_MATCH"
+    assert zero["row_net_gex_usd"] == 0
 
 
 def test_no_iv_rv_skew_gex_score_or_support_labels_exist() -> None:
