@@ -38,7 +38,7 @@ jobs:
       NIGHTWATCH_API_KEY: ${{ secrets.NIGHTWATCH_API_KEY }}
       PROBE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'live' }}
       OUTPUT_DIR: research-output
-      PRIOR_DIR: ${{ runner.temp }}/oi-change-rollover-prior
+      PRIOR_DIR: ../.oi-change-rollover-prior
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
