@@ -23,7 +23,7 @@ from app.db.models import (
     RawVendorPayload,
     ZeroDteActivityDailySnapshot,
 )
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.models.signals import calendar_dte
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
@@ -196,7 +196,7 @@ class DailyDataPipeline:
             vendor_request_id=result.vendor_request_id,
             payload=result.payload,
             ticker=ticker,
-            observed_at=utc_now(),
+            vendor_observed_at=parse_vendor_observed_at(result.payload),
         )
         self.session.commit()
         return result, raw
@@ -593,8 +593,8 @@ class DailyRadarCollector:
                 current_same_side_expiry_oi=None,
             )
             structure = structure_by_symbol.get(row.contract_symbol)
-            row.captured_at = utc_now()
-            row.ny_market_date = self.pipeline.run.ny_market_date
+            # Re-evaluation may populate versioned analytical fields, but the existing
+            # source row's original local capture identity is immutable.
             row.material_event_eligible = eligibility.eligible
             row.radar_route_eligible = eligibility.eligible
             row.eligibility_reason = eligibility.reason

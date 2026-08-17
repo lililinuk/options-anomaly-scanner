@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes.scans import _distribution, _max_numeric, _radar_status
+from app.api.routes.scans import _distribution, _max_numeric, _radar_status, _run_state
 from app.db.session import get_db_session
 from app.main import app
 from app.scanner.service import ConcurrentScanError
@@ -142,6 +142,7 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
         app.dependency_overrides.clear()
     assert response.status_code == 200
     assert response.json() == {
+        "run_state": "NOT_RUN",
         "scan": None,
         "results": [],
         "distribution": {
@@ -187,6 +188,21 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
         },
         "legacy_v12_available": False,
     }
+
+
+def test_scan_run_state_distinguishes_success_failure_running_and_not_run() -> None:
+    assert _run_state(None, candidate_count=0) == "NOT_RUN"
+    assert _run_state(SimpleNamespace(status="RUNNING"), candidate_count=0) == "RUNNING"
+    assert _run_state(SimpleNamespace(status="FAILED"), candidate_count=0) == "FAILED"
+    assert _run_state(SimpleNamespace(status="PARTIAL"), candidate_count=1) == "FAILED"
+    assert (
+        _run_state(SimpleNamespace(status="COMPLETE"), candidate_count=0)
+        == "SUCCESS_NO_CANDIDATE"
+    )
+    assert (
+        _run_state(SimpleNamespace(status="COMPLETE"), candidate_count=1)
+        == "SUCCESS_WITH_CANDIDATES"
+    )
 
 
 def test_latest_scan_numeric_summary_ignores_unavailable_values() -> None:

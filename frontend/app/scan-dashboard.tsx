@@ -10,6 +10,14 @@ type Scan = {
   archive_completed_at?: string | null;
 };
 
+type RunState =
+  | "DB_OFFLINE"
+  | "NOT_RUN"
+  | "RUNNING"
+  | "FAILED"
+  | "SUCCESS_NO_CANDIDATE"
+  | "SUCCESS_WITH_CANDIDATES";
+
 type RadarEvent = {
   ticker: string;
   contract_symbol: string;
@@ -133,6 +141,7 @@ type Phase2bContext = {
 };
 
 type Payload = {
+  run_state: RunState;
   scan: Scan | null;
   specification_version?: string;
   threshold_profile?: { profile_id: string; version: string };
@@ -144,7 +153,16 @@ type Payload = {
   research_candidates?: ResearchCandidate[];
 };
 
-const empty: Payload = { scan: null };
+const empty: Payload = { run_state: "NOT_RUN", scan: null };
+
+function emptyMessage(runState: RunState, successfulEmptyMessage: string): string {
+  if (runState === "FAILED" || runState === "DB_OFFLINE") {
+    return "Latest scan data is unavailable; no successful empty result is being inferred.";
+  }
+  if (runState === "RUNNING") return "A scan is currently running; results are not final.";
+  if (runState === "NOT_RUN") return "No MAG7 scan has run yet.";
+  return successfulEmptyMessage;
+}
 
 function display(value: string | number | null): string {
   if (value == null || value === "") return "—";
@@ -176,11 +194,18 @@ export function ScanDashboard() {
   const [contextMessage, setContextMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const response = await fetch("/api/mag7-scan", { cache: "no-store" });
-    const payload = (await response.json()) as Payload;
-    setData(payload);
-    setMinPremium((current) => current ?? payload.radar_filters?.min_premium_usd ?? null);
-    setMinOiDiff((current) => current ?? payload.radar_filters?.min_abs_oi_diff ?? null);
+    try {
+      const response = await fetch("/api/mag7-scan", { cache: "no-store" });
+      const payload = (await response.json()) as Payload & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail ?? "Latest scan data is unavailable.");
+      setData(payload);
+      setMessage(null);
+      setMinPremium((current) => current ?? payload.radar_filters?.min_premium_usd ?? null);
+      setMinOiDiff((current) => current ?? payload.radar_filters?.min_abs_oi_diff ?? null);
+    } catch (error) {
+      setData({ run_state: "FAILED", scan: null });
+      setMessage(error instanceof Error ? error.message : "Latest scan data is unavailable.");
+    }
   }, []);
 
   useEffect(() => {
@@ -235,7 +260,7 @@ export function ScanDashboard() {
     <>
       <section className="scan-strip" aria-label="Latest scan status">
         <div><span>Specification</span><strong>{data.specification_version ?? "signal_spec_v1.3_phase2a"}</strong></div>
-        <div><span>Scan status</span><strong>{data.scan?.status ?? "NOT_RUN"}</strong></div>
+        <div><span>Scan status</span><strong>{data.run_state}</strong></div>
         <div><span>Radar profile</span><strong>{data.threshold_profile ? `${data.threshold_profile.profile_id} · ${data.threshold_profile.version}` : "—"}</strong></div>
         <div><span>Archive freshness</span><strong>{data.scan?.archive_completed_at ? `${data.scan.archive_status} · ${display(data.scan.archive_completed_at)}` : "—"}</strong></div>
         <button className="run-button" type="button" onClick={run} disabled={running}>{running ? "Scanning…" : "Run MAG7 Scan"}</button>
@@ -254,28 +279,28 @@ export function ScanDashboard() {
           <button className="secondary-button" type="button" onClick={() => setShowAll((value) => !value)}>{showAll ? "Top 15" : "Inspect all"}</button>
         </div>
         <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract</th><th>Expiry / DTE</th><th>Right</th><th>Strike</th><th>Premium</th><th>ΔOI</th><th>OI Change %</th><th>Volume</th><th>Trades</th><th>Vendor date</th><th>Archive</th></tr></thead>
-          <tbody>{events.length ? events.map((row) => <tr key={`${row.ticker}-${row.contract_symbol}-${row.vendor_observation_date}`}><td>{row.ticker}</td><td><details><summary>{row.contract_symbol}</summary><div className="event-detail">Prev / current OI: {display(row.previous_oi)} / {display(row.current_oi)}<br />Premium / trade: {money(row.premium_per_trade)} · Volume / trade: {display(row.volume_per_trade)}<br />Avg / bid / ask / fill: {display(row.avg_price_usd)} / {display(row.last_bid_usd)} / {display(row.last_ask_usd)} / {display(row.last_fill_usd)}<br />Vendor rank: {display(row.vendor_rank)} · Structure: {display(row.contract_structure_score)} · Persistent: {display(row.contract_persistent_score)}<br />Flags: {row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</div></details></td><td>{row.expiration ? `${row.expiration} / ${display(row.dte)}` : "UNJOINED"}</td><td>{display(row.right)}</td><td>{display(row.strike)}</td><td>{money(row.premium_usd)}</td><td>{display(row.oi_diff)}</td><td>{percent(row.oi_change)}</td><td>{display(row.volume)}</td><td>{display(row.trades)}</td><td>{display(row.vendor_observation_date)}</td><td><span className="context-badge">{row.archive_match_status === "EXACT" ? row.archive_completeness : "UNJOINED"}</span>{row.radar_scope === "LONG_DTE_RADAR_WATCH" && <span className="context-badge">LONG_DTE_RADAR_WATCH</span>}</td></tr>) : <tr><td colSpan={12}><div className="empty-state"><h3>No qualifying Radar Material Events</h3><p>Absence from this vendor-ranked subset is missing evidence, not negative evidence.</p></div></td></tr>}</tbody>
+          <tbody>{events.length ? events.map((row) => <tr key={`${row.ticker}-${row.contract_symbol}-${row.vendor_observation_date}`}><td>{row.ticker}</td><td><details><summary>{row.contract_symbol}</summary><div className="event-detail">Prev / current OI: {display(row.previous_oi)} / {display(row.current_oi)}<br />Premium / trade: {money(row.premium_per_trade)} · Volume / trade: {display(row.volume_per_trade)}<br />Avg / bid / ask / fill: {display(row.avg_price_usd)} / {display(row.last_bid_usd)} / {display(row.last_ask_usd)} / {display(row.last_fill_usd)}<br />Vendor rank: {display(row.vendor_rank)} · Structure: {display(row.contract_structure_score)} · Persistent: {display(row.contract_persistent_score)}<br />Flags: {row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</div></details></td><td>{row.expiration ? `${row.expiration} / ${display(row.dte)}` : "UNJOINED"}</td><td>{display(row.right)}</td><td>{display(row.strike)}</td><td>{money(row.premium_usd)}</td><td>{display(row.oi_diff)}</td><td>{percent(row.oi_change)}</td><td>{display(row.volume)}</td><td>{display(row.trades)}</td><td>{display(row.vendor_observation_date)}</td><td><span className="context-badge">{row.archive_match_status === "EXACT" ? row.archive_completeness : "UNJOINED"}</span>{row.radar_scope === "LONG_DTE_RADAR_WATCH" && <span className="context-badge">LONG_DTE_RADAR_WATCH</span>}</td></tr>) : <tr><td colSpan={12}><div className="empty-state"><h3>{emptyMessage(data.run_state, "No qualifying Radar Material Events")}</h3><p>Absence from this vendor-ranked subset is missing evidence, not negative evidence.</p></div></td></tr>}</tbody>
         </table></div>
       </section>
 
       <section className="panel results-panel" aria-labelledby="persistent-title">
         <div className="panel-header"><div><span className="eyebrow">Route 2 · Multi-session OI</span><h2 id="persistent-title">Persistent Positioning</h2></div><small>Build and decline are descriptive; neither implies investor direction</small></div>
         <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract</th><th>Expiry / DTE</th><th>Right / Strike</th><th>3 / 5 / 10 session ΔOI</th><th>OI Growth</th><th>State</th><th>Score</th><th>Winning window</th><th>History</th></tr></thead>
-          <tbody>{(data.persistent_positioning ?? []).length ? data.persistent_positioning?.map((row) => <tr key={row.contract_symbol}><td>{row.ticker}</td><td>{row.contract_symbol}</td><td>{row.expiration} / {row.dte}</td><td>{row.right} / {display(row.strike)}</td><td>{display(row.oi_change_3)} / {display(row.oi_change_5)} / {display(row.oi_change_10)}</td><td>{percent(row.oi_growth)}</td><td>{display(row.persistent_state)}</td><td>{display(row.persistent_score)}</td><td>{display(row.winning_window)}</td><td>{row.history_confidence === "INSUFFICIENT" ? `Persistent history: ${row.history_observation_count ?? 0} / ${row.history_required} minimum observations` : `${row.history_confidence} · ${row.history_observation_count ?? 0} sessions`}</td></tr>) : <tr><td colSpan={10}>Persistent history is still collecting; missing history is not zero.</td></tr>}</tbody>
+          <tbody>{(data.persistent_positioning ?? []).length ? data.persistent_positioning?.map((row) => <tr key={row.contract_symbol}><td>{row.ticker}</td><td>{row.contract_symbol}</td><td>{row.expiration} / {row.dte}</td><td>{row.right} / {display(row.strike)}</td><td>{display(row.oi_change_3)} / {display(row.oi_change_5)} / {display(row.oi_change_10)}</td><td>{percent(row.oi_growth)}</td><td>{display(row.persistent_state)}</td><td>{display(row.persistent_score)}</td><td>{display(row.winning_window)}</td><td>{row.history_confidence === "INSUFFICIENT" ? `Persistent history: ${row.history_observation_count ?? 0} / ${row.history_required} minimum observations` : `${row.history_confidence} · ${row.history_observation_count ?? 0} sessions`}</td></tr>) : <tr><td colSpan={10}>{emptyMessage(data.run_state, "Persistent history is still collecting; missing history is not zero.")}</td></tr>}</tbody>
         </table></div>
       </section>
 
       <section className="panel results-panel" aria-labelledby="activity-title">
         <div className="panel-header"><div><span className="eyebrow">Route 3 · Expiry concentration</span><h2 id="activity-title">Unusual Expiry Activity</h2></div><small>Accepted v1.2 Same-Day logic retained</small></div>
         <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Expiry / DTE</th><th>Activity Score</th><th>Volume Share</th><th>VS Points</th><th>Neighbor Ratio</th><th>Neighbor Points</th><th>Score Basis</th><th>Context</th><th>0DTE baseline</th></tr></thead>
-          <tbody>{(data.unusual_expiry_activity ?? []).length ? data.unusual_expiry_activity?.map((row) => <tr key={`${row.ticker}-${row.expiry}`}><td>{row.ticker}</td><td>{row.expiry} / {row.dte}</td><td>{display(row.same_day_activity_score)}</td><td>{percent(row.volume_share)}</td><td>{display(row.volume_share_points)}</td><td>{display(row.neighbor_ratio)}</td><td>{display(row.neighbor_points)}</td><td>{display(row.score_basis)}</td><td>{row.standard_monthly_inferred ? <span className="context-badge" title="Calendar inferred; score weight 0">Monthly OPEX · INFERRED</span> : "—"}</td><td>{row.baseline_status ? `${row.baseline_status} · ${row.baseline_observation_count ?? 0}` : "—"}</td></tr>) : <tr><td colSpan={10}>No current expiry route candidate. Unavailable values remain unknown, not zero.</td></tr>}</tbody>
+          <tbody>{(data.unusual_expiry_activity ?? []).length ? data.unusual_expiry_activity?.map((row) => <tr key={`${row.ticker}-${row.expiry}`}><td>{row.ticker}</td><td>{row.expiry} / {row.dte}</td><td>{display(row.same_day_activity_score)}</td><td>{percent(row.volume_share)}</td><td>{display(row.volume_share_points)}</td><td>{display(row.neighbor_ratio)}</td><td>{display(row.neighbor_points)}</td><td>{display(row.score_basis)}</td><td>{row.standard_monthly_inferred ? <span className="context-badge" title="Calendar inferred; score weight 0">Monthly OPEX · INFERRED</span> : "—"}</td><td>{row.baseline_status ? `${row.baseline_status} · ${row.baseline_observation_count ?? 0}` : "—"}</td></tr>) : <tr><td colSpan={10}>{emptyMessage(data.run_state, "No current expiry route candidate. Unavailable values remain unknown, not zero.")}</td></tr>}</tbody>
         </table></div>
       </section>
 
       <section className="panel results-panel" aria-labelledby="deep-title">
         <div className="panel-header"><div><span className="eyebrow">Research workspace</span><h2 id="deep-title">Deep Dive / Research Candidates</h2></div><small>No universal conviction score</small></div>
         <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract / Expiry</th><th>Trigger Sources</th><th>Radar Premium / ΔOI</th><th>Persistent</th><th>Expiry Activity</th><th>Structure</th><th>Archive</th><th>Flags</th></tr></thead>
-          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{row.entity_type === "CONTRACT" ? <button className="context-link" type="button" onClick={() => void openContext(row.contract_or_expiry)}>{row.contract_or_expiry}</button> : row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>No route-qualified research candidate is available yet.</td></tr>}</tbody>
+          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{row.entity_type === "CONTRACT" ? <button className="context-link" type="button" onClick={() => void openContext(row.contract_or_expiry)}>{row.contract_or_expiry}</button> : row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>{emptyMessage(data.run_state, "No route-qualified research candidate is available yet.")}</td></tr>}</tbody>
         </table></div>
         {contextMessage && <p className="context-message" role="status">{contextMessage}</p>}
         {context && <ConfirmationContext context={context} />}

@@ -46,6 +46,20 @@ def _response(summary: ScanSummary) -> ScanSummaryResponse:
     return ScanSummaryResponse(**{**summary.__dict__, "scan_run_id": str(summary.scan_run_id)})
 
 
+def _run_state(run: ScanRun | None, *, candidate_count: int) -> str:
+    """Map persisted scan truth to the Stage 2 run-level availability contract."""
+
+    if run is None:
+        return "NOT_RUN"
+    if run.status == "RUNNING":
+        return "RUNNING"
+    if run.status != "COMPLETE":
+        # PARTIAL, DATA_PENDING, and budget-limited runs must not claim a successful
+        # no-candidate outcome. The original backend status remains available in scan.status.
+        return "FAILED"
+    return "SUCCESS_WITH_CANDIDATES" if candidate_count else "SUCCESS_NO_CANDIDATE"
+
+
 @router.post("/mag7", response_model=ScanSummaryResponse)
 async def run_mag7_scan(session: Session = database_session) -> ScanSummaryResponse:
     settings = get_settings()
@@ -81,6 +95,7 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
         )
     if run is None:
         empty = {
+            "run_state": "NOT_RUN",
             "scan": None,
             "results": [],
             "distribution": _distribution([]),
@@ -244,6 +259,10 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
         "structural_cold_start": [_expiry_public(row) for row in cold_only],
     }
     payload.update(_v13_sections(session, run, expiries, contracts))
+    payload["run_state"] = _run_state(
+        run,
+        candidate_count=len(payload["research_candidates"]),
+    )
     return payload
 
 

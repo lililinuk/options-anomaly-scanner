@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -17,7 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db.base import Base
 
@@ -682,6 +683,11 @@ class Phase2bTickerContextSnapshot(Base):
     __tablename__ = "phase2b_ticker_context_snapshots"
     __table_args__ = (
         Index("ix_phase2b_ticker_context_ticker_created", "ticker", "created_at"),
+        Index(
+            "ix_phase2b_ticker_context_ticker_freshness",
+            "ticker",
+            "freshness_anchor_at",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -700,6 +706,9 @@ class Phase2bTickerContextSnapshot(Base):
     raw_payload_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     source_request_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     endpoint_statuses: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_first_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    freshness_anchor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_time_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
 
 class Phase2bCandidateEvaluation(Base):
@@ -711,6 +720,16 @@ class Phase2bCandidateEvaluation(Base):
             "ticker_context_id", "contract_symbol", name="uq_phase2b_context_contract"
         ),
         Index("ix_phase2b_candidate_symbol_evaluated", "contract_symbol", "evaluated_at"),
+        Index(
+            "ix_phase2b_candidate_symbol_identity",
+            "contract_symbol",
+            "evaluation_identity",
+        ),
+        CheckConstraint(
+            "evaluation_identity IS NULL OR evaluation_identity IN "
+            "('FIRST_KNOWLEDGE_BASELINE', 'REFRESH')",
+            name="eval_identity_allowed",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -736,6 +755,21 @@ class Phase2bCandidateEvaluation(Base):
     specification_version: Mapped[str] = mapped_column(String(64), nullable=False)
     config_version: Mapped[str] = mapped_column(String(64), nullable=False)
     config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_first_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_radar_observation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "oi_change_radar_observations.id",
+            name="fk_phase2b_eval_source_radar",
+        )
+    )
+    evaluation_identity: Mapped[str | None] = mapped_column(String(32))
+
+    @validates("evaluation_identity")
+    def _preserve_evaluation_identity(self, _key: str, value: str | None) -> str | None:
+        current = self.__dict__.get("evaluation_identity")
+        if current is not None and value != current:
+            raise ValueError("Evaluation identity is immutable once set")
+        return value
 
 
 class Phase2bCandidateState(Base):

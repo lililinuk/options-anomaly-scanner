@@ -1,12 +1,18 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from inspect import getsource
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from app.api.routes.scans import _deep_dive_public
-from app.scanner.daily import daily_pipeline_status, missing_coverage_tickers
+from app.db.models import DailyCollectionCoverage, OiChangeRadarObservation
+from app.scanner.daily import (
+    DailyRadarCollector,
+    daily_pipeline_status,
+    missing_coverage_tickers,
+)
 from app.scanner.v13 import (
     RadarThresholdProfile,
     deduplicate_deep_dive_requests,
@@ -161,6 +167,139 @@ def test_daily_backfill_and_subjob_truth() -> None:
     assert daily_pipeline_status(["COMPLETE", "FAILED", "COMPLETE"]) == "PARTIAL"
     assert daily_pipeline_status(["FAILED", "FAILED", "FAILED"]) == "FAILED"
     assert daily_pipeline_status(["COMPLETE", "NO_NEW_DATA", "COMPLETE"]) == "COMPLETE"
+
+
+def test_radar_re_evaluation_preserves_original_capture_identity(
+    profile: RadarThresholdProfile,
+) -> None:
+    captured_at = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+    original_market_date = date(2026, 8, 13)
+    row = SimpleNamespace(
+        ticker="NVDA",
+        contract_symbol="NVDA260821C00220000",
+        observation_date=date(2026, 8, 13),
+        premium=Decimal("175000"),
+        delta_oi=3000,
+        previous_oi=1000,
+        volume=5000,
+        trades=50,
+        captured_at=captured_at,
+        ny_market_date=original_market_date,
+        source_request_id="fixture-radar-request",
+    )
+
+    class BackfillSession:
+        def __init__(self) -> None:
+            self.scalar_results = iter([[row], [], [], []])
+            self.added: list[object] = []
+
+        def scalars(self, _statement):  # type: ignore[no-untyped-def]
+            return next(self.scalar_results)
+
+        def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            return None
+
+        def add(self, item: object) -> None:
+            self.added.append(item)
+
+        def commit(self) -> None:
+            return None
+
+    session = BackfillSession()
+    pipeline = SimpleNamespace(
+        session=session,
+        run=SimpleNamespace(id=uuid4(), ny_market_date=date(2026, 8, 17)),
+        profile=profile,
+    )
+
+    DailyRadarCollector(pipeline)._backfill_existing_observations()
+
+    assert row.captured_at == captured_at
+    assert row.ny_market_date == original_market_date
+    assert row.material_event_eligible is True
+    assert len(session.added) == 1
+    assert isinstance(session.added[0], DailyCollectionCoverage)
+
+
+@pytest.mark.asyncio
+async def test_new_radar_evidence_persists_once_and_reprocessing_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: RadarThresholdProfile,
+) -> None:
+    observation_date = date(2026, 8, 14)
+    item = SimpleNamespace(
+        symbol="NVDA260821C00220000",
+        observation_date=observation_date,
+        previous_date=date(2026, 8, 13),
+        previous_oi=1000,
+        current_oi=4000,
+        delta_oi=3000,
+        relative_change=3.0,
+        volume=5000,
+        trades=50,
+        average_price=7.0,
+        premium=175000,
+        rank=1,
+        last_bid=6.9,
+        last_ask=7.1,
+        last_fill=7.0,
+    )
+
+    class RadarSession:
+        def __init__(self) -> None:
+            # First run: no coverage, no identity match, no archive, no structure.
+            # Second run: existing COMPLETE coverage suppresses duplicate persistence.
+            self.scalar_results = iter([None, None, None, None, uuid4()])
+            self.added: list[object] = []
+
+        def scalars(self, _statement):  # type: ignore[no-untyped-def]
+            return []
+
+        def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            return next(self.scalar_results)
+
+        def add(self, value: object) -> None:
+            self.added.append(value)
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    session = RadarSession()
+    result = SimpleNamespace(
+        payload={"fixture": True},
+        vendor_request_id=None,
+        request_id="fixture-radar-request",
+    )
+    raw = SimpleNamespace(id=uuid4())
+
+    async def fetch(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return result, raw
+
+    pipeline = SimpleNamespace(
+        session=session,
+        run=SimpleNamespace(id=uuid4(), ny_market_date=date(2026, 8, 17)),
+        profile=profile,
+        fetch=fetch,
+    )
+    collector = DailyRadarCollector(pipeline)
+    monkeypatch.setattr(collector, "_backfill_existing_observations", lambda: None)
+    monkeypatch.setattr(collector, "_target_tickers", lambda: ("NVDA",))
+    monkeypatch.setattr("app.scanner.daily.parse_oi_change_radar", lambda _payload: [item])
+
+    first = await collector.execute()
+    second = await collector.execute()
+
+    radar_rows = [value for value in session.added if isinstance(value, OiChangeRadarObservation)]
+    coverage_rows = [value for value in session.added if isinstance(value, DailyCollectionCoverage)]
+    assert first.rows_persisted == 1
+    assert second.rows_persisted == 0
+    assert len(radar_rows) == 1
+    assert len(coverage_rows) == 1
+    assert radar_rows[0].captured_at is not None
+    assert radar_rows[0].ny_market_date == date(2026, 8, 17)
 
 
 def test_expiry_only_deep_dive_row_is_explicit_and_has_no_contract_state() -> None:

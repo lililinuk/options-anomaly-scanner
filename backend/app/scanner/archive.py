@@ -18,7 +18,7 @@ from app.db.models import (
     ExpiryOiDailySnapshot,
     RawVendorPayload,
 )
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.models.signals import bucket_for_dte, calendar_dte
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
@@ -346,7 +346,7 @@ class DailyOiArchiver:
             payload=result.payload,
             ticker=ticker,
             expiration=expiration,
-            observed_at=utc_now(),
+            vendor_observed_at=parse_vendor_observed_at(result.payload),
             scan_run_id=None,
         )
         self.session.commit()

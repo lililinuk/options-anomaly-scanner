@@ -22,6 +22,9 @@ class FakeSession:
     def flush(self) -> None:
         return None
 
+    def scalar(self, _statement):  # type: ignore[no-untyped-def]
+        return None
+
 
 class NoNetworkClient:
     calls = 0
@@ -158,6 +161,13 @@ async def test_heatmap_failure_keeps_ticker_context_available() -> None:
     assert context.dealer_heatmap["availability_reason"] == "VALIDATION_ERROR"
     assert context.dealer_heatmap["cells"] == []
     assert context.dealer_heatmap["row_stacks"] == []
+    assert context.source_first_received_at is not None
+    assert context.freshness_anchor_at is not None
+    assert context.source_time_provenance["dealer_heatmap"]["vendor_observed_at"] is None
+    assert (
+        context.source_time_provenance["dealer_heatmap"]["freshness_basis"]
+        == "LOCAL_REQUEST_ATTEMPT_ONLY"
+    )
 
 
 async def test_unavailable_heatmap_is_requested_once_and_shared_by_ticker(
@@ -291,6 +301,8 @@ def test_candidate_evaluation_survives_unavailable_dealer_context() -> None:
         "positioning": "AVAILABLE",
     }
     assert evaluation.direction == "UNRESOLVED"
+    assert evaluation.evaluation_identity == "REFRESH"
+    assert evaluation.source_radar_observation_id is None
     assert evaluation.specification_version == "signal_spec_v1.2_phase2b"
     assert isinstance(evaluation.evaluated_at, datetime)
     assert evaluation.evaluated_at.tzinfo == timezone.utc

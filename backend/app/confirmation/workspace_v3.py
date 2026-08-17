@@ -212,7 +212,9 @@ def build_dealer_gex_structure(
     if anchor is None:
         raise ValueError("anchor_expiration must be an ISO date")
     quality = str(heatmap.get("availability") or "UNAVAILABLE")
-    source_timestamp = heatmap.get("generated_at") or heatmap.get("capture_timestamp")
+    # Vendor observation and local capture are distinct identities. Unknown vendor time
+    # stays unknown instead of falling back to the local request timestamp.
+    source_timestamp = heatmap.get("generated_at")
     if quality not in USABLE_DEALER_QUALITIES:
         return _empty_dealer_structure(
             anchor_expiration=anchor,

@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import CapabilitySnapshot, MetadataRefresh
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.nightwatch.models import ApiUsageEvent, NightwatchResult
 from app.normalization.capabilities import NormalizedCapability
 from app.persistence.api_usage import persist_api_usage
@@ -47,7 +47,7 @@ class MetadataRepository:
                 request_id=source_request_id,
                 vendor_request_id=result.vendor_request_id,
                 payload=result.payload,
-                observed_at=usage_event.requested_at,
+                vendor_observed_at=parse_vendor_observed_at(result.payload),
             )
             persist_api_usage(self._session, usage_event)
             refresh = MetadataRefresh(
