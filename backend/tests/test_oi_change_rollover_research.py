@@ -262,6 +262,8 @@ def test_workflow_is_isolated_and_has_the_exact_august_schedule() -> None:
     assert "oi-change-rollover-timing-experiment" in workflow
     assert "NIGHTWATCH_API_KEY: ${{ secrets.NIGHTWATCH_API_KEY }}" in workflow
     assert "DATABASE_URL" not in workflow
+    assert "${{ runner.temp }}" not in workflow
+    assert "PRIOR_DIR: ../.oi-change-rollover-prior" in workflow
     assert "dealer-gex-daily-archive" not in workflow
     assert "workflow_dispatch:" in workflow
     assert "actions/upload-artifact@v6" in workflow
