@@ -23,6 +23,7 @@ from app.db.models import (
 )
 from app.models.signals import DteBucket, bucket_for_dte, calendar_dte
 from app.nightwatch.errors import NightwatchError
+from app.scanner.candidate_persistence import materialize_successful_scan_candidates
 from app.scanner.clusters import PositioningClusterContract, build_positioning_clusters
 from app.scanner.config import LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE, configuration_snapshot
 from app.scanner.history import OiHistoryPoint, contract_persistence, expiry_persistence
@@ -101,6 +102,7 @@ class Mag7Scanner(LegacyMag7Scanner):
             raise
         except Exception as error:
             if self.run:
+                self.session.rollback()
                 self.run.status = "FAILED"
                 self.run.completed_at = utc_now()
                 self.run.summary = {"safe_error": type(error).__name__}
@@ -814,6 +816,12 @@ class Mag7Scanner(LegacyMag7Scanner):
             "intraday_requests": 0,
             "elapsed_seconds": elapsed,
         }
+        if status == "COMPLETE":
+            materialize_successful_scan_candidates(
+                self.session,
+                self.run,
+                materialized_at=self.run.completed_at,
+            )
         self.session.commit()
         return ScanSummary(
             self.run.id,

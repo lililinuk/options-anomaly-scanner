@@ -42,6 +42,177 @@ class ScanRun(Base):
     radar_threshold_profile_id: Mapped[str | None] = mapped_column(String(64))
     radar_threshold_profile_version: Mapped[str | None] = mapped_column(String(64))
     radar_threshold_config_hash: Mapped[str | None] = mapped_column(String(64))
+    candidate_materialized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    candidate_materialization_rule_version: Mapped[str | None] = mapped_column(String(96))
+    candidate_materialization_rule_hash: Mapped[str | None] = mapped_column(String(64))
+
+    @validates(
+        "candidate_materialized_at",
+        "candidate_materialization_rule_version",
+        "candidate_materialization_rule_hash",
+    )
+    def _validate_immutable_materialization_marker(self, key: str, value: Any) -> Any:
+        if key in self.__dict__ and self.__dict__[key] is not None:
+            if self.__dict__[key] != value:
+                raise ValueError(f"ScanRun.{key} is immutable once established")
+        return value
+
+
+class ProductCandidate(Base):
+    """One immutable ticker candidate occurrence from a successful scan."""
+
+    __tablename__ = "product_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_run_id",
+            "ticker",
+            "materialization_rule_version",
+            name="uq_product_candidate_occurrence",
+        ),
+        CheckConstraint(
+            "lifecycle_state = 'MATERIALIZED'",
+            name="product_candidate_lifecycle_allowed",
+        ),
+        Index(
+            "ix_product_candidate_ticker_first_known",
+            "ticker",
+            "candidate_first_knowledge_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    scan_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scan_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    candidate_first_knowledge_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    materialization_rule_version: Mapped[str] = mapped_column(String(96))
+    materialization_rule_hash: Mapped[str] = mapped_column(String(64))
+    lifecycle_state: Mapped[str] = mapped_column(String(24), default="MATERIALIZED")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    triggers: Mapped[list["ProductCandidateTrigger"]] = relationship(
+        back_populates="product_candidate",
+        cascade="all, delete-orphan",
+        order_by="ProductCandidateTrigger.id",
+        lazy="selectin",
+    )
+
+    @validates(
+        "scan_run_id",
+        "ticker",
+        "candidate_first_knowledge_at",
+        "materialization_rule_version",
+        "materialization_rule_hash",
+    )
+    def _validate_immutable_identity(self, key: str, value: Any) -> Any:
+        if key in self.__dict__ and self.__dict__[key] != value:
+            raise ValueError(f"ProductCandidate.{key} is immutable")
+        return value
+
+
+class ProductCandidateTrigger(Base):
+    """An immutable active-family anomaly linked to a ProductCandidate."""
+
+    __tablename__ = "product_candidate_triggers"
+    __table_args__ = (
+        UniqueConstraint(
+            "product_candidate_id",
+            "evidence_family",
+            "source_evidence_identity",
+            name="uq_candidate_trigger_source_evidence",
+        ),
+        CheckConstraint(
+            "evidence_family IN "
+            "('RADAR_EVENT', 'EXPIRY_ACTIVITY', 'CONTRACT_PERSISTENCE')",
+            name="candidate_trigger_family_allowed",
+        ),
+        CheckConstraint(
+            "anomaly_entity_type IN ('CONTRACT', 'EXPIRY')",
+            name="candidate_trigger_entity_allowed",
+        ),
+        CheckConstraint(
+            "(evidence_family = 'EXPIRY_ACTIVITY' AND anomaly_entity_type = 'EXPIRY' "
+            "AND source_expiry_observation_id IS NOT NULL "
+            "AND source_radar_observation_id IS NULL "
+            "AND source_contract_observation_id IS NULL) OR "
+            "(evidence_family = 'RADAR_EVENT' AND anomaly_entity_type = 'CONTRACT' "
+            "AND source_radar_observation_id IS NOT NULL "
+            "AND source_expiry_observation_id IS NULL "
+            "AND source_contract_observation_id IS NULL) OR "
+            "(evidence_family = 'CONTRACT_PERSISTENCE' "
+            "AND anomaly_entity_type = 'CONTRACT' "
+            "AND source_contract_observation_id IS NOT NULL "
+            "AND source_radar_observation_id IS NULL "
+            "AND source_expiry_observation_id IS NULL)",
+            name="candidate_trigger_source_matches_family",
+        ),
+        Index(
+            "ix_candidate_trigger_candidate_family",
+            "product_candidate_id",
+            "evidence_family",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    product_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("product_candidates.id")
+    )
+    evidence_family: Mapped[str] = mapped_column(String(32))
+    anomaly_entity_type: Mapped[str] = mapped_column(String(16))
+    anomaly_identity: Mapped[str] = mapped_column(String(128))
+    source_evidence_identity: Mapped[str] = mapped_column(String(192))
+    qualifies_candidate: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    present_at_first_knowledge: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    event_date: Mapped[date | None] = mapped_column(Date)
+    trigger_first_knowledge_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    source_first_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    vendor_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    local_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_raw_payload_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("raw_vendor_payloads.id")
+    )
+    source_radar_observation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("oi_change_radar_observations.id")
+    )
+    source_expiry_observation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("expiry_observations.id")
+    )
+    source_contract_observation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("contract_scan_observations.id")
+    )
+    source_ids: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    specification_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    product_candidate: Mapped[ProductCandidate] = relationship(back_populates="triggers")
+
+    @validates(
+        "product_candidate_id",
+        "evidence_family",
+        "anomaly_entity_type",
+        "anomaly_identity",
+        "source_evidence_identity",
+        "trigger_first_knowledge_at",
+        "source_first_received_at",
+        "present_at_first_knowledge",
+    )
+    def _validate_immutable_identity(self, key: str, value: Any) -> Any:
+        if key in self.__dict__ and self.__dict__[key] is not None:
+            if self.__dict__[key] != value:
+                raise ValueError(f"ProductCandidateTrigger.{key} is immutable")
+        return value
 
 
 class ScanStage(Base):

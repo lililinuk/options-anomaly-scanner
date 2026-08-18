@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -20,18 +20,31 @@ from app.db.models import (
 )
 from app.db.session import get_db_session
 from app.nightwatch.client import NightwatchClient
+from app.scanner.candidate_projection import (
+    contract_deep_dive as _shared_contract_deep_dive,
+)
+from app.scanner.candidate_projection import (
+    expiry_deep_dive as _shared_expiry_deep_dive,
+)
+from app.scanner.candidate_projection import (
+    load_stage4_candidate_projection,
+)
+from app.scanner.candidate_projection import (
+    persistence_evidence_for_projection as _shared_persistence_evidence,
+)
+from app.scanner.candidate_projection import (
+    persistent_public as _shared_persistent_public,
+)
+from app.scanner.candidate_projection import (
+    vnext_anomaly_pool as _shared_vnext_anomaly_pool,
+)
 from app.scanner.config import LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE
 from app.scanner.service import ConcurrentScanError, ScanSummary
 from app.scanner.v13 import Mag7Scanner, active_radar_threshold_profile
 from app.scanner.vnext import (
     ACTIVE_DISCOVERY_FAMILIES,
     REMOVED_ACTIVE_DISCOVERY_FAMILIES,
-    analysis_date_exclusive_utc_cutoff,
-    group_product_candidates,
     persistence_freshness_policy,
-    persistence_observation_is_time_admissible,
-    persistence_window_last_observation_date,
-    select_current_persistence_observations,
 )
 
 router = APIRouter()
@@ -301,70 +314,21 @@ def _v13_sections(
     contracts: list[ContractScanObservation],
 ) -> dict[str, Any]:
     profile = active_radar_threshold_profile()
-    radar_rows: list[OiChangeRadarObservation] = []
-    for ticker in UNIVERSE:
-        latest = session.scalar(
-            select(func.max(OiChangeRadarObservation.observation_date)).where(
-                OiChangeRadarObservation.ticker == ticker,
-                OiChangeRadarObservation.material_event_eligible.is_(True),
-            )
-        )
-        if latest:
-            radar_rows.extend(
-                session.scalars(
-                    select(OiChangeRadarObservation).where(
-                        OiChangeRadarObservation.ticker == ticker,
-                        OiChangeRadarObservation.observation_date == latest,
-                        OiChangeRadarObservation.material_event_eligible.is_(True),
-                    )
-                )
-            )
-    radar_rows.sort(
-        key=lambda row: (_float(row.premium) or 0, abs(row.delta_oi or 0)), reverse=True
-    )
-    material_events = [_radar_public(row) for row in radar_rows]
-
-    persistent_analytics = [
-        row
-        for row in contracts
-        if row.persistent_positioning_score is not None
-        and float(row.persistent_positioning_score) >= LIMITS.persistent_eligibility_score
-    ]
-    analysis_date = run.market_date if run else None
-    persistent_contracts = _persistence_evidence_for_projection(
+    projection = load_stage4_candidate_projection(
         session,
-        analysis_date=analysis_date,
-        current_run_analytics=persistent_analytics,
+        run,
+        expiries,
+        contracts,
+        policy=persistence_freshness_policy(),
+        knowledge_cutoff=getattr(run, "candidate_materialized_at", None),
     )
-    persistent_contracts.sort(
-        key=lambda row: float(row.persistent_positioning_score or 0), reverse=True
-    )
-    activity = [
-        row
-        for row in expiries
-        if row.same_day_activity_score is not None
-        and float(row.same_day_activity_score) >= LIMITS.same_day_eligibility_score
-    ]
-    activity.sort(key=lambda row: float(row.same_day_activity_score or 0), reverse=True)
-    expiry_ids = [row.id for row in expiries]
-    clusters = (
-        list(
-            session.scalars(
-                select(StrikeCluster).where(StrikeCluster.expiry_observation_id.in_(expiry_ids))
-            )
-        )
-        if expiry_ids
-        else []
-    )
-    anomaly_pool = _vnext_anomaly_pool(
-        radar_rows,
-        persistent_contracts,
-        activity,
-        contracts=contracts,
-        clusters=clusters,
-        analysis_date=analysis_date,
-    )
-    product_candidates = group_product_candidates(anomaly_pool)
+    analysis_date = run.market_date if run is not None else None
+    radar_rows = projection.radar_rows
+    material_events = [_radar_public(row) for row in radar_rows]
+    persistent_contracts = projection.persistence_rows
+    activity = projection.activity_rows
+    anomaly_pool = projection.anomaly_pool
+    product_candidates = projection.product_candidates
     return {
         "specification_version": SIGNAL_SPEC_VERSION,
         "architecture": {
@@ -372,7 +336,9 @@ def _v13_sections(
             "removed_active_discovery": list(REMOVED_ACTIVE_DISCOVERY_FAMILIES),
             "candidate_entity": "TICKER_PRODUCT_PROJECTION",
             "anomaly_entity": "CONTRACT_OR_EXPIRY",
-            "persisted_product_candidate_created": False,
+            "persisted_product_candidate_created": bool(
+                getattr(run, "candidate_materialized_at", None) is not None
+            ),
         },
         "threshold_profile": profile.snapshot(),
         "radar_filters": {
@@ -387,7 +353,11 @@ def _v13_sections(
         "unusual_expiry_activity": [_activity_public(row) for row in activity],
         "anomaly_pool": anomaly_pool,
         "research_candidates": product_candidates,
-        "route_counts": _route_counts(anomaly_pool, product_candidates, persistent_analytics),
+        "route_counts": _route_counts(
+            anomaly_pool,
+            product_candidates,
+            projection.persistence_analytics,
+        ),
         "persistence_current_trigger_freshness": persistence_freshness_policy().snapshot(),
     }
 
@@ -398,35 +368,12 @@ def _persistence_evidence_for_projection(
     analysis_date: date | None,
     current_run_analytics: list[ContractScanObservation],
 ) -> list[ContractScanObservation]:
-    """Return untruncated current triggers plus available current-run analytics."""
-
-    current_triggers: list[ContractScanObservation] = []
-    if analysis_date is not None:
-        candidates = list(
-            session.scalars(
-                select(ContractScanObservation)
-                .where(
-                    ContractScanObservation.persistent_positioning_score
-                    >= LIMITS.persistent_eligibility_score,
-                    ContractScanObservation.ticker.in_(UNIVERSE),
-                    ContractScanObservation.observed_at
-                    < analysis_date_exclusive_utc_cutoff(analysis_date),
-                )
-                .order_by(desc(ContractScanObservation.observed_at))
-            )
-        )
-        current_triggers = list(
-            select_current_persistence_observations(
-                candidates,
-                policy=persistence_freshness_policy(),
-                analysis_date=analysis_date,
-            )
-        )
-
-    evidence_by_symbol = {row.contract_symbol: row for row in current_triggers}
-    for row in current_run_analytics:
-        evidence_by_symbol.setdefault(row.contract_symbol, row)
-    return list(evidence_by_symbol.values())
+    return _shared_persistence_evidence(
+        session,
+        analysis_date=analysis_date,
+        current_run_analytics=current_run_analytics,
+        policy=persistence_freshness_policy(),
+    )
 
 
 def _vnext_anomaly_pool(
@@ -438,141 +385,25 @@ def _vnext_anomaly_pool(
     clusters: list[StrikeCluster],
     analysis_date: date | None,
 ) -> list[dict[str, Any]]:
-    anomalies: list[dict[str, Any]] = []
-    contracts_by_symbol = {row.contract_symbol: row for row in contracts}
-    contracts_by_expiry: dict[Any, list[ContractScanObservation]] = {}
-    clusters_by_expiry: dict[Any, list[StrikeCluster]] = {}
-    for row in contracts:
-        contracts_by_expiry.setdefault(row.expiry_observation_id, []).append(row)
-    for row in clusters:
-        clusters_by_expiry.setdefault(row.expiry_observation_id, []).append(row)
-    for row in radar:
-        contract = contracts_by_symbol.get(row.contract_symbol)
-        anomalies.append(
-            {
-                "anomaly_entity": "CONTRACT",
-                "anomaly_identity": row.contract_symbol,
-                "ticker": row.ticker,
-                "evidence_family": "RADAR_EVENT",
-                "evidence_date": row.observation_date.isoformat()
-                if row.observation_date
-                else None,
-                "qualifies_current_candidate": True,
-                "expiration": row.matched_expiration.isoformat()
-                if row.matched_expiration
-                else None,
-                "dte": row.matched_dte,
-                "dte_anchor_date": row.observation_date.isoformat()
-                if row.observation_date
-                else None,
-                "dte_anchor_type": "VENDOR_OBSERVATION_DATE",
-                "deep_dive_eligible": bool(row.deep_dive_eligible),
-                "radar_premium_usd": _float(row.premium),
-                "radar_oi_diff": row.delta_oi,
-                "archive_completeness": row.archive_completeness or "UNAVAILABLE",
-                "risk_flags": row.risk_flags or [],
-                "deep_dive_context": _contract_deep_dive(contract),
-            }
-        )
-    for row in activity:
-        dte_identity = (row.components or {}).get("dte_identity", {})
-        anomalies.append(
-            {
-                "anomaly_entity": "EXPIRY",
-                "anomaly_identity": row.expiration.isoformat(),
-                "ticker": row.ticker,
-                "evidence_family": "EXPIRY_ACTIVITY",
-                "evidence_date": dte_identity.get("anchor_date"),
-                "qualifies_current_candidate": True,
-                "expiration": row.expiration.isoformat(),
-                "dte": row.dte_at_detection,
-                "dte_anchor_date": dte_identity.get("anchor_date"),
-                "dte_anchor_type": dte_identity.get("anchor_type"),
-                "score_basis": row.same_day_score_basis,
-                "same_day_activity_score": _float(row.same_day_activity_score),
-                "comparable_neighbor_ratio": _float(row.neighbor_ratio),
-                "deep_dive_eligible": bool(row.deep_dive_eligible),
-                "deep_dive_context": _expiry_deep_dive(
-                    contracts_by_expiry.get(row.id, []),
-                    clusters_by_expiry.get(row.id, []),
-                ),
-            }
-        )
-    for row in persistent:
-        public = _persistent_public(row, analysis_date=analysis_date)
-        deep_dive_row = contracts_by_symbol.get(row.contract_symbol)
-        anomalies.append(
-            {
-                "anomaly_entity": "CONTRACT",
-                "anomaly_identity": row.contract_symbol,
-                "ticker": row.ticker,
-                "evidence_family": "CONTRACT_PERSISTENCE",
-                "evidence_date": public["window_last_observation_date"],
-                "qualifies_current_candidate": public["current_trigger_eligible"],
-                "expiration": row.expiration.isoformat(),
-                "dte": row.dte_at_detection,
-                "dte_anchor_date": (row.components or {})
-                .get("dte_identity", {})
-                .get("anchor_date"),
-                "dte_anchor_type": (row.components or {})
-                .get("dte_identity", {})
-                .get("anchor_type"),
-                "persistent_state": row.persistent_state,
-                "current_trigger_freshness": public["current_trigger_freshness"],
-                "deep_dive_selected_for_current_run": deep_dive_row is not None,
-                "deep_dive_eligible": deep_dive_row is not None,
-                "deep_dive_context": _contract_deep_dive(deep_dive_row),
-            }
-        )
-    return anomalies
+    return _shared_vnext_anomaly_pool(
+        radar,
+        persistent,
+        activity,
+        contracts=contracts,
+        clusters=clusters,
+        analysis_date=analysis_date,
+        policy=persistence_freshness_policy(),
+    )
 
 
 def _contract_deep_dive(row: ContractScanObservation | None) -> dict[str, Any]:
-    if row is None:
-        return {
-            "availability": "UNAVAILABLE",
-            "structure_positive_evidence": False,
-            "structure": None,
-            "quote": None,
-        }
-    positive = bool(
-        row.is_candidate
-        and row.classification
-        in {"STRUCTURAL_CANDIDATE", "STRONG_STRUCTURE", "EXTREME_STRUCTURE"}
-        and row.hard_reject_reason is None
-    )
-    quote = (row.components or {}).get("quote")
-    return {
-        "availability": "AVAILABLE",
-        "structure_positive_evidence": positive,
-        "structure": {
-            "score": _float(row.structure_score),
-            "classification": row.classification,
-            "components": row.structure_components or {},
-        },
-        "quote": quote,
-    }
+    return _shared_contract_deep_dive(row)
 
 
 def _expiry_deep_dive(
     contracts: list[ContractScanObservation], clusters: list[StrikeCluster]
 ) -> dict[str, Any]:
-    return {
-        "availability": "AVAILABLE" if contracts else "UNAVAILABLE",
-        "structures": [_contract_deep_dive(row) for row in contracts],
-        "valid_clusters": [
-            {
-                "right": row.right,
-                "classification": row.classification,
-                "min_strike": _float(row.min_strike),
-                "max_strike": _float(row.max_strike),
-                "score": _float(row.cluster_score),
-                "components": row.components,
-            }
-            for row in clusters
-            if _valid_cluster(row)
-        ],
-    }
+    return _shared_expiry_deep_dive(contracts, clusters)
 
 
 def _radar_public(row: OiChangeRadarObservation) -> dict[str, Any]:
@@ -620,69 +451,11 @@ def _radar_public(row: OiChangeRadarObservation) -> dict[str, Any]:
 def _persistent_public(
     row: ContractScanObservation, *, analysis_date: date | None
 ) -> dict[str, Any]:
-    windows = (row.persistent_components or {}).get("windows", {})
-    policy = persistence_freshness_policy()
-    window_last = persistence_window_last_observation_date(row)
-    if analysis_date is None:
-        current_trigger_eligible = False
-        current_trigger_state = (
-            "CALIBRATION_REQUIRED"
-            if policy.mode == "CALIBRATION_REQUIRED"
-            else "ANALYSIS_DATE_UNAVAILABLE"
-        )
-        observation_age_days = None
-    elif (
-        policy.mode != "CALIBRATION_REQUIRED"
-        and not persistence_observation_is_time_admissible(row, analysis_date=analysis_date)
-    ):
-        current_trigger_eligible = False
-        current_trigger_state = "INADMISSIBLE_OBSERVATION_TIME"
-        observation_age_days = None
-    else:
-        assessment = policy.assess(
-            window_last_observation_date=window_last,
-            analysis_date=analysis_date,
-        )
-        current_trigger_eligible = assessment.eligible
-        current_trigger_state = assessment.state
-        observation_age_days = assessment.observation_age_days
-    components = row.persistent_components or {}
-    quote = (row.components or {}).get("quote", {})
-    dte_identity = (row.components or {}).get("dte_identity", {})
-    return {
-        "ticker": row.ticker,
-        "contract_symbol": row.contract_symbol,
-        "expiration": row.expiration.isoformat(),
-        "dte": row.dte_at_detection,
-        "right": row.right,
-        "strike": _float(row.strike),
-        "oi_change_3": windows.get("3", {}).get("net_oi_change"),
-        "oi_change_5": windows.get("5", {}).get("net_oi_change"),
-        "oi_change_10": windows.get("10", {}).get("net_oi_change"),
-        "oi_growth": windows.get(str(row.persistent_winning_window), {}).get("oi_growth")
-        if row.persistent_winning_window
-        else None,
-        "persistent_state": row.persistent_state,
-        "persistent_score": _float(row.persistent_positioning_score),
-        "winning_window": row.persistent_winning_window,
-        "history_confidence": row.history_confidence,
-        "history_observation_count": row.history_observation_count,
-        "history_required": 3,
-        "window_first_observation_date": components.get("window_first_observation_date"),
-        "window_last_observation_date": components.get("window_last_observation_date"),
-        "valid_observation_count": components.get("valid_observation_count"),
-        "no_lookahead_bound": components.get("no_lookahead_bound"),
-        "current_trigger_eligible": current_trigger_eligible,
-        "current_trigger_freshness": {
-            **policy.snapshot(),
-            "state": current_trigger_state,
-            "observation_age_days": observation_age_days,
-        },
-        "dte_anchor_date": dte_identity.get("anchor_date"),
-        "dte_anchor_type": dte_identity.get("anchor_type"),
-        "quote_availability": quote.get("availability"),
-        "quote_as_of": quote.get("quote_as_of"),
-    }
+    return _shared_persistent_public(
+        row,
+        analysis_date=analysis_date,
+        policy=persistence_freshness_policy(),
+    )
 
 
 def _activity_public(row: ExpiryObservation) -> dict[str, Any]:
