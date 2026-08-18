@@ -415,13 +415,37 @@ class DailyCollectionCoverage(Base):
             "subjob", "ticker", "observation_date", name="uq_daily_coverage_job_ticker_date"
         ),
         Index("ix_daily_coverage_job_date", "subjob", "observation_date"),
+        UniqueConstraint(
+            "subjob",
+            "ticker",
+            "activity_market_date",
+            name="uq_daily_coverage_activity_market_date",
+        ),
+        UniqueConstraint(
+            "subjob",
+            "ticker",
+            "vendor_oi_date",
+            name="uq_daily_coverage_vendor_oi_date",
+        ),
+        CheckConstraint(
+            "activity_market_date IS NULL OR subjob = 'ACTIVITY'",
+            name="daily_coverage_activity_date_semantics",
+        ),
+        CheckConstraint(
+            "vendor_oi_date IS NULL OR subjob = 'RADAR'",
+            name="daily_coverage_vendor_oi_date_semantics",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     daily_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("daily_collection_runs.id"))
     subjob: Mapped[str] = mapped_column(String(24))
     ticker: Mapped[str] = mapped_column(String(16))
+    # Retained for legacy read compatibility only. New writes use exactly one
+    # of activity_market_date or vendor_oi_date according to subjob semantics.
     observation_date: Mapped[date] = mapped_column(Date)
+    activity_market_date: Mapped[date | None] = mapped_column(Date)
+    vendor_oi_date: Mapped[date | None] = mapped_column(Date)
     vendor_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32))
@@ -459,6 +483,8 @@ class DailyExpiryActivitySnapshot(Base):
 
 
 class ZeroDteActivityDailySnapshot(Base):
+    """Accepted legacy 0DTE evidence; all rows are legacy or ambiguous for clean research."""
+
     __tablename__ = "zero_dte_activity_daily_snapshots"
     __table_args__ = (
         UniqueConstraint(
@@ -473,6 +499,59 @@ class ZeroDteActivityDailySnapshot(Base):
     ticker: Mapped[str] = mapped_column(String(16))
     observation_date: Mapped[date] = mapped_column(Date)
     expiration: Mapped[date] = mapped_column(Date)
+    expiry_volume: Mapped[int] = mapped_column(BigInteger)
+    ticker_scope_volume: Mapped[int] = mapped_column(BigInteger)
+    volume_share: Mapped[Decimal] = mapped_column(Numeric(12, 8))
+    raw_cross_expiry_neighbor_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    raw_payload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("raw_vendor_payloads.id"))
+    source_request_id: Mapped[str] = mapped_column(String(128))
+    specification_version: Mapped[str] = mapped_column(String(64))
+
+
+class ZeroDteActivitySessionSnapshot(Base):
+    """Versioned Stage 4A 0DTE evidence with explicit session completeness."""
+
+    __tablename__ = "zero_dte_activity_session_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker",
+            "observation_date",
+            "snapshot_kind",
+            name="uq_zero_dte_session_ticker_date_kind",
+        ),
+        Index(
+            "ix_zero_dte_canonical_history",
+            "ticker",
+            "snapshot_kind",
+            "observation_date",
+        ),
+        CheckConstraint(
+            "snapshot_kind IN "
+            "('PROVISIONAL_INTRADAY', 'CANONICAL_SESSION_COMPLETE', "
+            "'LEGACY_OR_AMBIGUOUS')",
+            name="zero_dte_session_kind_allowed",
+        ),
+        CheckConstraint(
+            "(snapshot_kind = 'PROVISIONAL_INTRADAY' "
+            "AND scan_run_id IS NOT NULL AND daily_run_id IS NULL "
+            "AND session_close_at IS NULL) OR "
+            "(snapshot_kind = 'CANONICAL_SESSION_COMPLETE' "
+            "AND scan_run_id IS NULL AND daily_run_id IS NOT NULL "
+            "AND session_close_at IS NOT NULL) OR "
+            "snapshot_kind = 'LEGACY_OR_AMBIGUOUS'",
+            name="zero_dte_session_origin_consistent",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scan_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scan_runs.id"))
+    daily_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("daily_collection_runs.id"))
+    ticker: Mapped[str] = mapped_column(String(16))
+    observation_date: Mapped[date] = mapped_column(Date)
+    expiration: Mapped[date] = mapped_column(Date)
+    snapshot_kind: Mapped[str] = mapped_column(String(40))
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    session_close_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expiry_volume: Mapped[int] = mapped_column(BigInteger)
     ticker_scope_volume: Mapped[int] = mapped_column(BigInteger)
     volume_share: Mapped[Decimal] = mapped_column(Numeric(12, 8))
@@ -551,6 +630,7 @@ class ContractOiDailySnapshot(Base):
     dte: Mapped[int] = mapped_column(Integer)
     bucket: Mapped[str] = mapped_column(String(32))
     open_interest: Mapped[int] = mapped_column(BigInteger)
+    open_interest_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     bid: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     ask: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
     implied_volatility: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))

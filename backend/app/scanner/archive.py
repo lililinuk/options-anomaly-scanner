@@ -273,6 +273,7 @@ class DailyOiArchiver:
                         dte=expiry_snapshot.dte,
                         bucket=expiry_snapshot.bucket,
                         open_interest=contract.open_interest,
+                        open_interest_as_of=contract.open_interest_as_of,
                         bid=contract.bid,
                         ask=contract.ask,
                         implied_volatility=contract.implied_volatility,

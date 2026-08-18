@@ -21,6 +21,7 @@ from app.persistence.api_usage import persist_api_usage
 from app.persistence.metadata import MetadataRepository
 from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
 from app.scanner.daily import DailyCollectionConcurrentError, DailyDataPipeline, DailyRadarBackfill
+from app.scanner.daily_semantics import DailyPipelineMode
 from app.scanner.service import ConcurrentScanError
 from app.scanner.v13 import Mag7Scanner
 
@@ -40,9 +41,20 @@ def build_parser() -> argparse.ArgumentParser:
         "archive-mag7-oi",
         help="Idempotently archive complete 0-180 DTE MAG7 daily OI snapshots",
     )
-    subcommands.add_parser(
+    daily_archive = subcommands.add_parser(
         "archive-mag7-daily",
         help="Run independent daily OI, expiry-activity, and OI-change Radar subjobs",
+    )
+    daily_archive.add_argument(
+        "--mode",
+        choices=[item.value for item in DailyPipelineMode],
+        default=DailyPipelineMode.ALL.value,
+        help="Run canonical Activity, Radar/OI, or the legacy manual all-subjob mode",
+    )
+    daily_archive.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Record durable scheduler invocation; Activity still requires the XNYS close guard",
     )
     subcommands.add_parser(
         "backfill-mag7-radar",
@@ -198,7 +210,7 @@ async def run_archive_mag7_oi() -> int:
     return 0
 
 
-async def run_archive_mag7_daily() -> int:
+async def run_archive_mag7_daily(*, mode: str, scheduled: bool) -> int:
     settings = get_settings()
     try:
         with get_session_factory()() as session:
@@ -210,7 +222,10 @@ async def run_archive_mag7_daily() -> int:
                 max_retries=0,
                 max_concurrency=min(settings.nightwatch_max_concurrency, 4),
             ) as client:
-                summary = await DailyDataPipeline(session, client).execute(trigger="cli")
+                summary = await DailyDataPipeline(session, client).execute(
+                    trigger="scheduled" if scheduled else "cli",
+                    mode=mode,
+                )
     except DailyCollectionConcurrentError as error:
         print(f"Daily MAG7 collection not started: {error}", file=sys.stderr)
         return 4
@@ -398,7 +413,7 @@ def main() -> int:
     if args.command == "archive-mag7-oi":
         return asyncio.run(run_archive_mag7_oi())
     if args.command == "archive-mag7-daily":
-        return asyncio.run(run_archive_mag7_daily())
+        return asyncio.run(run_archive_mag7_daily(mode=args.mode, scheduled=args.scheduled))
     if args.command == "backfill-mag7-radar":
         return asyncio.run(run_backfill_mag7_radar())
     if args.command == "refresh-phase2b-context":

@@ -323,6 +323,7 @@ class ArchivedChainContract:
     theta: Decimal | None
     vega: Decimal | None
     charm: Decimal | None
+    open_interest_as_of: datetime | None
 
 
 @dataclass(frozen=True)
@@ -348,6 +349,7 @@ def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteCha
     total_raw = data.get("total_contracts")
     total = int(total_raw) if isinstance(total_raw, (int, float)) else None
     truncated = meta.get("truncated") if isinstance(meta.get("truncated"), bool) else None
+    chain_open_interest_as_of = _datetime(data.get("open_interest_as_of"))
     complete = truncated is False and total is not None and len(rows) == total
     contracts: list[ArchivedChainContract] = []
     if complete:
@@ -384,6 +386,7 @@ def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteCha
                     theta=_decimal(_number(row, "theta")),
                     vega=_decimal(_number(row, "vega")),
                     charm=_decimal(_number(row, "charm")),
+                    open_interest_as_of=_datetime(row.get("open_interest_as_of")),
                 )
             )
     if not complete:
@@ -398,7 +401,7 @@ def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteCha
         quote_as_of=_datetime(data.get("quote_as_of")),
         greeks_as_of=_datetime(data.get("greeks_as_of")),
         underlying_as_of=_datetime(data.get("underlying_as_of")),
-        open_interest_as_of=_datetime(data.get("open_interest_as_of")),
+        open_interest_as_of=chain_open_interest_as_of,
     )
 
 

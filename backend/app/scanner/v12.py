@@ -13,11 +13,12 @@ from app.db.models import (
     ExpiryOiDailySnapshot,
     StrikeCluster,
     TickerScanResult,
-    ZeroDteActivityDailySnapshot,
+    ZeroDteActivitySessionSnapshot,
 )
 from app.models.signals import DteBucket, bucket_for_dte, calendar_dte
 from app.nightwatch.errors import NightwatchError
 from app.scanner.config import LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE
+from app.scanner.daily_semantics import ZeroDteSnapshotKind
 from app.scanner.history import PersistenceResult
 from app.scanner.parsers import ExpiryAggregate, parse_expiry_aggregates, parse_ticker_activity
 from app.scanner.scoring import (
@@ -329,12 +330,14 @@ class Mag7Scanner(V11Mag7Scanner):
     def _zero_dte_history(self, ticker: str, observation_date: date) -> list[float]:
         rows = list(
             self.session.scalars(
-                select(ZeroDteActivityDailySnapshot)
+                select(ZeroDteActivitySessionSnapshot)
                 .where(
-                    ZeroDteActivityDailySnapshot.ticker == ticker,
-                    ZeroDteActivityDailySnapshot.observation_date < observation_date,
+                    ZeroDteActivitySessionSnapshot.ticker == ticker,
+                    ZeroDteActivitySessionSnapshot.snapshot_kind
+                    == ZeroDteSnapshotKind.CANONICAL_SESSION_COMPLETE.value,
+                    ZeroDteActivitySessionSnapshot.observation_date < observation_date,
                 )
-                .order_by(desc(ZeroDteActivityDailySnapshot.observation_date))
+                .order_by(desc(ZeroDteActivitySessionSnapshot.observation_date))
                 .limit(LIMITS.zero_dte_baseline_observations)
             )
         )
@@ -349,20 +352,26 @@ class Mag7Scanner(V11Mag7Scanner):
         source_request_id: str,
     ) -> None:
         existing = self.session.scalar(
-            select(ZeroDteActivityDailySnapshot.id).where(
-                ZeroDteActivityDailySnapshot.ticker == ticker,
-                ZeroDteActivityDailySnapshot.observation_date == observation_date,
+            select(ZeroDteActivitySessionSnapshot.id).where(
+                ZeroDteActivitySessionSnapshot.ticker == ticker,
+                ZeroDteActivitySessionSnapshot.observation_date == observation_date,
+                ZeroDteActivitySessionSnapshot.snapshot_kind
+                == ZeroDteSnapshotKind.PROVISIONAL_INTRADAY.value,
             )
         )
         if existing is not None:
             return
         aggregate, share, raw_neighbor, ticker_scope_volume = values
         self.session.add(
-            ZeroDteActivityDailySnapshot(
+            ZeroDteActivitySessionSnapshot(
                 scan_run_id=self.run.id,
+                daily_run_id=None,
                 ticker=ticker,
                 observation_date=observation_date,
                 expiration=aggregate.expiration,
+                snapshot_kind=ZeroDteSnapshotKind.PROVISIONAL_INTRADAY.value,
+                captured_at=utc_now(),
+                session_close_at=None,
                 expiry_volume=aggregate.total_volume,
                 ticker_scope_volume=ticker_scope_volume,
                 volume_share=_dec(share),
