@@ -402,6 +402,11 @@ class Mag7Scanner(LegacyMag7Scanner):
             if archived_expiry is None:
                 self.partial = True
                 continue
+            if expiry.vendor_oi_date is None:
+                # Contract Persistence and archive-derived DTE require an authoritative
+                # vendor evidence date.  Missing is not replaced with the scan date.
+                self.partial = True
+                continue
             archived = list(
                 self.session.scalars(
                     select(ContractOiDailySnapshot).where(
@@ -419,6 +424,7 @@ class Mag7Scanner(LegacyMag7Scanner):
                         ContractOiDailySnapshot.contract_symbol.in_(
                             [row.contract_symbol for row in archived]
                         ),
+                        ContractOiDailySnapshot.vendor_oi_date <= expiry.vendor_oi_date,
                     )
                     .order_by(
                         ContractOiDailySnapshot.contract_symbol,
@@ -471,8 +477,20 @@ class Mag7Scanner(LegacyMag7Scanner):
                             for row in history_rows
                         ],
                         current_same_side_expiry_oi=side_total,
+                        analysis_date=expiry.vendor_oi_date,
                     )
                     prior_oi = history_rows[-2].open_interest if len(history_rows) >= 2 else None
+                    detection_dte = calendar_dte(item.expiration, item.vendor_oi_date)
+                    detection_bucket = bucket_for_dte(detection_dte)
+                    current_dte = calendar_dte(item.expiration, market_day)
+                    current_bucket = bucket_for_dte(current_dte)
+                    quote_availability = (
+                        "AVAILABLE"
+                        if item.bid is not None and item.ask is not None and item.ask >= item.bid
+                        else "PARTIAL"
+                        if item.bid is not None or item.ask is not None
+                        else "UNAVAILABLE"
+                    )
                     row = ContractScanObservation(
                         scan_run_id=self.run.id,
                         expiry_observation_id=expiry.id,
@@ -483,10 +501,14 @@ class Mag7Scanner(LegacyMag7Scanner):
                         right=right,
                         strike=item.strike,
                         observed_at=utc_now(),
-                        dte_at_detection=calendar_dte(item.expiration, market_day),
-                        bucket_at_detection=expiry.bucket_at_detection,
-                        current_dte=calendar_dte(item.expiration, market_day),
-                        current_bucket=expiry.current_bucket,
+                        dte_at_detection=detection_dte,
+                        bucket_at_detection=(
+                            detection_bucket.value
+                            if detection_bucket is not None
+                            else expiry.bucket_at_detection
+                        ),
+                        current_dte=current_dte,
+                        current_bucket=current_bucket.value if current_bucket is not None else None,
                         volume=None,
                         previous_oi=prior_oi,
                         volume_oi_ratio=None,
@@ -507,7 +529,19 @@ class Mag7Scanner(LegacyMag7Scanner):
                         is_candidate=scored.candidate,
                         hard_reject_reason=scored.hard_reject,
                         risk_flags=list(scored.flags),
-                        components={},
+                        components={
+                            "dte_identity": {
+                                "anchor_date": item.vendor_oi_date.isoformat(),
+                                "anchor_type": "VENDOR_OI_DATE",
+                            },
+                            "quote": {
+                                "availability": quote_availability,
+                                "quote_as_of": item.quote_as_of.isoformat()
+                                if item.quote_as_of
+                                else None,
+                                "source": "COMPLETE_DAILY_CHAIN_ARCHIVE",
+                            },
+                        },
                         source_request_ids=[item.source_request_id],
                         specification_version=SIGNAL_SPEC_VERSION,
                         current_oi=item.open_interest,

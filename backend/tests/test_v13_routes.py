@@ -122,7 +122,9 @@ def test_independent_routes_do_not_require_a_universal_score() -> None:
     assert persistent_only.trigger_sources == ("CONTRACT_PERSISTENCE",)
     assert activity_only.trigger_sources == ("EXPIRY_ACTIVITY",)
     assert multiple.trigger_sources == ("RADAR_EVENT", "EXPIRY_ACTIVITY")
-    assert cold_only.deep_dive_eligible
+    assert cold_only.trigger_sources == ()
+    assert cold_only.deep_dive_eligible is False
+    assert resolve_route_state(expiry_persistence=True).deep_dive_eligible is False
 
 
 def test_deep_dive_chain_requests_are_deduplicated_and_keep_sources() -> None:
@@ -137,8 +139,8 @@ def test_deep_dive_chain_requests_are_deduplicated_and_keep_sources() -> None:
     assert len(result) == 1
     assert result[("NVDA", expiry)] == [
         "RADAR_EVENT",
-        "CONTRACT_PERSISTENCE",
         "EXPIRY_ACTIVITY",
+        "CONTRACT_PERSISTENCE",
     ]
 
 
@@ -154,6 +156,9 @@ def test_opex_inference_and_score_basis_are_descriptive_only() -> None:
     assert same_day_score_basis(
         {"expiry_volume_share": 20, "comparable_expiry_volume_neighbor_ratio": 15}
     ) == (20.0, 15.0, "BALANCED")
+    assert same_day_score_basis(
+        {"robust_historical_deviation": 70, "historical_percentile": 30}, dte=0
+    ) == (None, None, "ZERO_DTE_HISTORICAL_CALIBRATION")
 
 
 def test_daily_backfill_and_subjob_truth() -> None:

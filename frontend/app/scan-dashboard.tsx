@@ -65,6 +65,15 @@ type Persistent = {
   history_confidence: string;
   history_observation_count: number | null;
   history_required: number;
+  window_first_observation_date: string | null;
+  window_last_observation_date: string | null;
+  valid_observation_count: number | null;
+  current_trigger_eligible: boolean;
+  current_trigger_freshness: { mode: string; state: string; observation_age_days: number | null };
+  dte_anchor_date: string | null;
+  dte_anchor_type: string | null;
+  quote_availability: string | null;
+  quote_as_of: string | null;
 };
 
 type ExpiryActivity = {
@@ -74,28 +83,36 @@ type ExpiryActivity = {
   same_day_activity_score: number | null;
   volume_share: number | null;
   volume_share_points: number | null;
-  neighbor_ratio: number | null;
+  comparable_neighbor_ratio: number | null;
   neighbor_points: number | null;
   score_basis: string | null;
   standard_monthly_inferred: boolean;
   monthly_context_source: string | null;
   baseline_status: string | null;
   baseline_observation_count: number | null;
+  dte_anchor_date: string | null;
+  dte_anchor_type: string | null;
+};
+
+type CandidateAnomaly = {
+  anomaly_entity: "CONTRACT" | "EXPIRY";
+  anomaly_identity: string;
+  ticker: string;
+  evidence_family: "RADAR_EVENT" | "EXPIRY_ACTIVITY" | "CONTRACT_PERSISTENCE";
+  expiration: string | null;
+  dte: number | null;
+  dte_anchor_date: string | null;
+  dte_anchor_type: string | null;
+  deep_dive_eligible: boolean;
+  qualifies_current_candidate: boolean;
 };
 
 type ResearchCandidate = {
-  entity_type: "CONTRACT" | "EXPIRY_ONLY";
+  entity_type: "PRODUCT_CANDIDATE_PROJECTION";
   ticker: string;
-  contract_or_expiry: string;
-  expiration: string | null;
-  trigger_sources: string[];
-  radar_premium_usd: number | null;
-  radar_oi_diff: number | null;
-  persistent_score: number | null;
-  expiry_activity_score: number | null;
-  structure_score: number | null;
-  archive_completeness: string | null;
-  risk_flags: string[];
+  active_trigger_sources: string[];
+  anomaly_count: number;
+  anomalies: CandidateAnomaly[];
 };
 
 type Phase2bContext = {
@@ -259,7 +276,7 @@ export function ScanDashboard() {
   return (
     <>
       <section className="scan-strip" aria-label="Latest scan status">
-        <div><span>Specification</span><strong>{data.specification_version ?? "signal_spec_v1.3_phase2a"}</strong></div>
+        <div><span>Specification</span><strong>{data.specification_version ?? "phase2a_vnext_stage4b"}</strong></div>
         <div><span>Scan status</span><strong>{data.run_state}</strong></div>
         <div><span>Radar profile</span><strong>{data.threshold_profile ? `${data.threshold_profile.profile_id} · ${data.threshold_profile.version}` : "—"}</strong></div>
         <div><span>Archive freshness</span><strong>{data.scan?.archive_completed_at ? `${data.scan.archive_status} · ${display(data.scan.archive_completed_at)}` : "—"}</strong></div>
@@ -285,22 +302,22 @@ export function ScanDashboard() {
 
       <section className="panel results-panel" aria-labelledby="persistent-title">
         <div className="panel-header"><div><span className="eyebrow">Route 2 · Multi-session OI</span><h2 id="persistent-title">Persistent Positioning</h2></div><small>Build and decline are descriptive; neither implies investor direction</small></div>
-        <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract</th><th>Expiry / DTE</th><th>Right / Strike</th><th>3 / 5 / 10 session ΔOI</th><th>OI Growth</th><th>State</th><th>Score</th><th>Winning window</th><th>History</th></tr></thead>
-          <tbody>{(data.persistent_positioning ?? []).length ? data.persistent_positioning?.map((row) => <tr key={row.contract_symbol}><td>{row.ticker}</td><td>{row.contract_symbol}</td><td>{row.expiration} / {row.dte}</td><td>{row.right} / {display(row.strike)}</td><td>{display(row.oi_change_3)} / {display(row.oi_change_5)} / {display(row.oi_change_10)}</td><td>{percent(row.oi_growth)}</td><td>{display(row.persistent_state)}</td><td>{display(row.persistent_score)}</td><td>{display(row.winning_window)}</td><td>{row.history_confidence === "INSUFFICIENT" ? `Persistent history: ${row.history_observation_count ?? 0} / ${row.history_required} minimum observations` : `${row.history_confidence} · ${row.history_observation_count ?? 0} sessions`}</td></tr>) : <tr><td colSpan={10}>{emptyMessage(data.run_state, "Persistent history is still collecting; missing history is not zero.")}</td></tr>}</tbody>
+        <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract</th><th>Expiry / DTE</th><th>Right / Strike</th><th>3 / 5 / 10 observation ΔOI</th><th>State / Score</th><th>Winning window span</th><th>Current trigger</th><th>Quote as-of</th></tr></thead>
+          <tbody>{(data.persistent_positioning ?? []).length ? data.persistent_positioning?.map((row) => <tr key={row.contract_symbol}><td>{row.ticker}</td><td>{row.contract_symbol}</td><td>{row.expiration} / {row.dte}<br /><small>anchor: {display(row.dte_anchor_date)} · {display(row.dte_anchor_type)}</small></td><td>{row.right} / {display(row.strike)}</td><td>{display(row.oi_change_3)} / {display(row.oi_change_5)} / {display(row.oi_change_10)}</td><td>{display(row.persistent_state)} / {display(row.persistent_score)}<br /><small>OI growth {percent(row.oi_growth)}</small></td><td>{display(row.window_first_observation_date)} → {display(row.window_last_observation_date)}<br /><small>{display(row.valid_observation_count)} valid observations · window {display(row.winning_window)}</small></td><td>{row.current_trigger_eligible ? "CURRENT" : row.current_trigger_freshness.state}<br /><small>{row.current_trigger_freshness.mode}</small></td><td>{display(row.quote_as_of)}<br /><small>{display(row.quote_availability)}</small></td></tr>) : <tr><td colSpan={9}>{emptyMessage(data.run_state, "Persistent history is still collecting; missing history is not zero.")}</td></tr>}</tbody>
         </table></div>
       </section>
 
       <section className="panel results-panel" aria-labelledby="activity-title">
         <div className="panel-header"><div><span className="eyebrow">Route 3 · Expiry concentration</span><h2 id="activity-title">Unusual Expiry Activity</h2></div><small>Accepted v1.2 Same-Day logic retained</small></div>
-        <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Expiry / DTE</th><th>Activity Score</th><th>Volume Share</th><th>VS Points</th><th>Neighbor Ratio</th><th>Neighbor Points</th><th>Score Basis</th><th>Context</th><th>0DTE baseline</th></tr></thead>
-          <tbody>{(data.unusual_expiry_activity ?? []).length ? data.unusual_expiry_activity?.map((row) => <tr key={`${row.ticker}-${row.expiry}`}><td>{row.ticker}</td><td>{row.expiry} / {row.dte}</td><td>{display(row.same_day_activity_score)}</td><td>{percent(row.volume_share)}</td><td>{display(row.volume_share_points)}</td><td>{display(row.neighbor_ratio)}</td><td>{display(row.neighbor_points)}</td><td>{display(row.score_basis)}</td><td>{row.standard_monthly_inferred ? <span className="context-badge" title="Calendar inferred; score weight 0">Monthly OPEX · INFERRED</span> : "—"}</td><td>{row.baseline_status ? `${row.baseline_status} · ${row.baseline_observation_count ?? 0}` : "—"}</td></tr>) : <tr><td colSpan={10}>{emptyMessage(data.run_state, "No current expiry route candidate. Unavailable values remain unknown, not zero.")}</td></tr>}</tbody>
+        <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Expiry / DTE anchor</th><th>Activity Score</th><th>Volume Share</th><th>VS Points</th><th>Comparable Neighbor Ratio</th><th>Neighbor Points</th><th>Score Basis</th><th>Context</th><th>0DTE baseline</th></tr></thead>
+          <tbody>{(data.unusual_expiry_activity ?? []).length ? data.unusual_expiry_activity?.map((row) => <tr key={`${row.ticker}-${row.expiry}`}><td>{row.ticker}</td><td>{row.expiry} / {row.dte}<br /><small>{display(row.dte_anchor_date)} · {display(row.dte_anchor_type)}</small></td><td>{display(row.same_day_activity_score)}</td><td>{percent(row.volume_share)}</td><td>{display(row.volume_share_points)}</td><td>{display(row.comparable_neighbor_ratio)}</td><td>{display(row.neighbor_points)}</td><td>{display(row.score_basis)}</td><td>{row.standard_monthly_inferred ? <span className="context-badge" title="Calendar inferred; score weight 0">Monthly OPEX · INFERRED</span> : "—"}</td><td>{row.baseline_status ? `${row.baseline_status} · ${row.baseline_observation_count ?? 0}` : "—"}</td></tr>) : <tr><td colSpan={10}>{emptyMessage(data.run_state, "No current expiry route candidate. Unavailable values remain unknown, not zero.")}</td></tr>}</tbody>
         </table></div>
       </section>
 
       <section className="panel results-panel" aria-labelledby="deep-title">
-        <div className="panel-header"><div><span className="eyebrow">Research workspace</span><h2 id="deep-title">Deep Dive / Research Candidates</h2></div><small>No universal conviction score</small></div>
-        <div className="table-wrap"><table><thead><tr><th>Ticker</th><th>Contract / Expiry</th><th>Trigger Sources</th><th>Radar Premium / ΔOI</th><th>Persistent</th><th>Expiry Activity</th><th>Structure</th><th>Archive</th><th>Flags</th></tr></thead>
-          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={`${row.ticker}-${row.contract_or_expiry}`}><td>{row.ticker}</td><td>{row.entity_type === "CONTRACT" ? <button className="context-link" type="button" onClick={() => void openContext(row.contract_or_expiry)}>{row.contract_or_expiry}</button> : row.contract_or_expiry}</td><td>{row.trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{money(row.radar_premium_usd)} / {display(row.radar_oi_diff)}</td><td>{display(row.persistent_score)}</td><td>{display(row.expiry_activity_score)}</td><td>{display(row.structure_score)}</td><td>{display(row.archive_completeness)}</td><td>{row.risk_flags.length ? row.risk_flags.join(", ") : "—"}</td></tr>) : <tr><td colSpan={9}>{emptyMessage(data.run_state, "No route-qualified research candidate is available yet.")}</td></tr>}</tbody>
+        <div className="panel-header"><div><span className="eyebrow">Ticker projection · not persisted</span><h2 id="deep-title">Product Candidates / Anomalies</h2></div><small>All qualifying anomalies retained · no ticker or conviction score</small></div>
+        <div className="table-wrap"><table><thead><tr><th>Product Candidate</th><th>Why Found</th><th>All qualifying anomalies</th><th>Anomaly count</th></tr></thead>
+          <tbody>{(data.research_candidates ?? []).length ? data.research_candidates?.map((row) => <tr key={row.ticker}><td>{row.ticker}</td><td>{row.active_trigger_sources.map((source) => <span className="route-badge" key={source}>{source}</span>)}</td><td>{row.anomalies.map((anomaly) => <div key={`${anomaly.evidence_family}-${anomaly.anomaly_identity}`}><strong>{anomaly.evidence_family}</strong> {!anomaly.qualifies_current_candidate && <span className="context-badge">supporting · not a current trigger</span>} · {anomaly.anomaly_entity === "CONTRACT" ? <button className="context-link" type="button" onClick={() => void openContext(anomaly.anomaly_identity)}>{anomaly.anomaly_identity}</button> : anomaly.anomaly_identity} · DTE {display(anomaly.dte)} anchored {display(anomaly.dte_anchor_date)} ({display(anomaly.dte_anchor_type)})</div>)}</td><td>{row.anomaly_count}</td></tr>) : <tr><td colSpan={4}>{emptyMessage(data.run_state, "No current Product Candidate projection is available yet.")}</td></tr>}</tbody>
         </table></div>
         {contextMessage && <p className="context-message" role="status">{contextMessage}</p>}
         {context && <ConfirmationContext context={context} />}

@@ -18,6 +18,6 @@ export default function FieldGuide() {
     <header className="topbar guide-header"><div><p className="breadcrumb">Research / 欄位說明</p><h1>Scanner 欄位說明與解讀指南</h1><p className="lede">Phase 2A 分析欄位的繁體中文單一來源。所有標籤描述活動結構，不推論買賣方向。</p></div></header>
     <section className="caveat-card"><span className="eyebrow">必讀限制</span><ul>{caveats.map((item) => <li key={item}>{item}</li>)}</ul></section>
     <section className="glossary-grid">{Object.entries(fieldGlossary).map(([key, item]) => <article className="glossary-card" id={key} key={key}><span className="field-code">{item.englishField}</span><h2>{item.中文名稱}</h2><dl><div><dt>定義</dt><dd>{item.定義}</dd></div><div><dt>計算方式</dt><dd>{item.計算方式}</dd></div><div><dt>如何解讀</dt><dd>{item.如何解讀}</dd></div><div><dt>注意事項</dt><dd>{item.注意事項}</dd></div><div><dt>更新頻率／資料時點</dt><dd>{item.更新頻率}</dd></div></dl></article>)}</section>
-    <footer><p>Phase 2A v1.3 · Positioning research only</p><p>規格版本 signal_spec_v1.3_phase2a</p></footer>
+    <footer><p>Phase 2A vNext · Positioning research only</p><p>Working architecture phase2a_vnext_stage4b</p></footer>
   </main></div>;
 }

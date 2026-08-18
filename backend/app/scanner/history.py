@@ -54,6 +54,9 @@ def _window_features(points: list[OiHistoryPoint], window: int) -> dict[str, Any
     persistence = matching / len(deltas) if deltas else None
     return {
         "window": window,
+        "window_first_observation_date": first.vendor_date.isoformat(),
+        "window_last_observation_date": current.vendor_date.isoformat(),
+        "valid_observation_count": len(rows),
         "net_oi_change": net,
         "oi_growth": growth,
         "oi_share_change": (
@@ -125,10 +128,18 @@ def expiry_persistence(points: list[OiHistoryPoint]) -> PersistenceResult:
 
 
 def contract_persistence(
-    points: list[OiHistoryPoint], *, current_same_side_expiry_oi: int | None
+    points: list[OiHistoryPoint],
+    *,
+    current_same_side_expiry_oi: int | None,
+    analysis_date: date | None = None,
 ) -> PersistenceResult:
     ordered = sorted(
-        {point.vendor_date: point for point in points}.values(), key=lambda p: p.vendor_date
+        {
+            point.vendor_date: point
+            for point in points
+            if analysis_date is None or point.vendor_date <= analysis_date
+        }.values(),
+        key=lambda p: p.vendor_date,
     )
     windows: dict[str, Any] = {}
     candidates: list[tuple[float, int, str]] = []
@@ -164,6 +175,23 @@ def contract_persistence(
         candidates.append((score, window, features["state"]))
     winner = max(candidates, default=None)
     features: dict[str, Any] = {"windows": windows}
+    if winner:
+        winning_features = windows[str(winner[1])]
+        features.update(
+            {
+                "window_first_observation_date": winning_features[
+                    "window_first_observation_date"
+                ],
+                "window_last_observation_date": winning_features[
+                    "window_last_observation_date"
+                ],
+                "valid_observation_count": winning_features["valid_observation_count"],
+                "analysis_date": analysis_date.isoformat() if analysis_date else None,
+                "no_lookahead_bound": "VENDOR_OI_DATE_LE_ANALYSIS_DATE"
+                if analysis_date
+                else "CALLER_NOT_SUPPLIED",
+            }
+        )
     if len(ordered) >= 2:
         features["delta_oi_1"] = ordered[-1].oi - ordered[-2].oi
     else:

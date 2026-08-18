@@ -46,9 +46,9 @@ for (const required of [
 }
 for (const required of [
   "Latest Contract Events", "Persistent Positioning", "Unusual Expiry Activity",
-  "Deep Dive / Research Candidates",
+  "Product Candidates / Anomalies", "All qualifying anomalies retained",
 ]) {
-  if (!dashboard.includes(required)) throw new Error(`Required v1.3 dashboard view missing: ${required}`);
+  if (!dashboard.includes(required)) throw new Error(`Required Phase 2A vNext view missing: ${required}`);
 }
 const serverOnlyKeyName = ["NIGHTWATCH", "API", "KEY"].join("_");
 const publicKeyPrefix = ["NEXT", "PUBLIC", "NIGHTWATCH"].join("_");
@@ -65,7 +65,15 @@ if (!source.includes("UNAVAILABLE 與 ROW_UNAVAILABLE")) {
 for (const forbidden of ["Volatility Direction", "Dealer GEX Direction", "MODEL BULLISH", "TRADE BULLISH"]) {
   if (dashboard.includes(forbidden)) throw new Error(`Superseded directional UI remains: ${forbidden}`);
 }
-if (!dashboard.includes('row.entity_type === "CONTRACT"')) {
+if (!dashboard.includes('anomaly.anomaly_entity === "CONTRACT"')) {
   throw new Error("Expiry-only rows must not open a fabricated exact-contract workspace");
 }
-console.log("Dashboard null-safety, v3 role separation, GEX structure, and expiry-only safety: passed");
+for (const required of [
+  "RADAR_EVENT", "EXPIRY_ACTIVITY", "CONTRACT_PERSISTENCE",
+  "PRODUCT_CANDIDATE_PROJECTION", "CALIBRATION_REQUIRED",
+]) {
+  if (!dashboard.includes(required) && !source.includes(required)) {
+    throw new Error(`Required Phase 2A vNext semantic missing: ${required}`);
+  }
+}
+console.log("Dashboard null-safety, Phase 2A vNext projection, and expiry-only safety: passed");

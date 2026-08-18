@@ -160,6 +160,7 @@ class Mag7Scanner(V11Mag7Scanner):
                     percentile = calibrated.percentile
                     robust_deviation = calibrated.robust_deviation
                     baseline_method = calibrated.method
+                    scoring_neighbor_ratio = None
                     if volume_share is not None:
                         zero_dte_snapshot = (
                             aggregate,
@@ -188,6 +189,7 @@ class Mag7Scanner(V11Mag7Scanner):
                     baseline_mean = baseline_median = baseline_mad = None
                     percentile = robust_deviation = None
                     baseline_method = "COMPARABLE_NONZERO_DTE_PEERS"
+                    scoring_neighbor_ratio = peers.ratio
 
                 persistent_score = persistence.score if persistence else None
                 oi_share = (
@@ -218,7 +220,7 @@ class Mag7Scanner(V11Mag7Scanner):
                     put_oi=archived.put_oi if archived else None,
                     volume_share=_dec(volume_share),
                     oi_share=archived.total_oi_share if archived else None,
-                    neighbor_ratio=_dec(raw_neighbor),
+                    neighbor_ratio=_dec(scoring_neighbor_ratio),
                     volume_skew=None,
                     oi_skew=_dec(skew(archived.call_oi, archived.put_oi)) if archived else None,
                     expiration_type=exp_type,
@@ -232,7 +234,15 @@ class Mag7Scanner(V11Mag7Scanner):
                     if self._eligible(same_day_score, persistent_score, cold_eligible)
                     else "OBSERVE",
                     selected_for_deep_scan=False,
-                    components={"same_day": same_day_components},
+                    components={
+                        "same_day": same_day_components,
+                        "dte_identity": {
+                            "anchor_date": activity_date.isoformat(),
+                            "anchor_type": "NY_MARKET_SESSION_DATE",
+                        },
+                        "comparable_neighbor_ratio_used_by_score": scoring_neighbor_ratio,
+                        "raw_cross_expiry_neighbor_ratio_descriptive_only": raw_neighbor,
+                    },
                     raw_payload_ids=[str(activity_fetch.raw.id), str(context_fetch.raw.id)],
                     source_request_ids=[
                         activity_fetch.source_request_id,

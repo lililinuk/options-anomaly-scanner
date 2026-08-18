@@ -54,7 +54,7 @@ class PositioningClusterResult:
     shape: str
     oi_share: float | None
     positioning_center: Decimal | None
-    components: dict[str, float]
+    components: dict[str, float | None]
     persistent_build_count: int
     persistent_decline_count: int
     oi_weighted_persistent_score: float | None
@@ -238,12 +238,12 @@ def build_positioning_clusters(
             "same_side_expiry_oi_concentration": (
                 piecewise(oi_share, SCORE_ANCHORS["cluster_oi_share"])
                 if oi_share is not None
-                else 0
+                else None
             ),
             "strike_coherence": float(coherence),
-            "liquidity": liquidity or 0,
+            "liquidity": liquidity,
         }
-        score = round(sum(components.values()), 3)
+        score = round(sum(value for value in components.values() if value is not None), 3)
         spot = next((row.spot for row in group if row.spot), None)
         span = float(group[-1].strike - group[0].strike) / float(spot) if spot else None
         shape = "TIGHT_CLUSTER" if span is not None and span <= 0.075 else "BROAD_CLUSTER"
@@ -258,9 +258,10 @@ def build_positioning_clusters(
         net_changes: dict[str, int] = {}
         for window in (3, 5, 10):
             values = [
-                int(row.net_oi_changes.get(str(window)) or 0)
+                int(row.net_oi_changes[str(window)])
                 for row in group
-                if row.net_oi_changes and str(window) in row.net_oi_changes
+                if row.net_oi_changes
+                and row.net_oi_changes.get(str(window)) is not None
             ]
             if values:
                 net_changes[str(window)] = sum(values)

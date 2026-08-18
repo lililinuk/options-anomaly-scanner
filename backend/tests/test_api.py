@@ -141,53 +141,34 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json() == {
-        "run_state": "NOT_RUN",
-        "scan": None,
-        "results": [],
-        "distribution": {
-            "total_expiries": 0,
-            "scored_expiries": 0,
-            "normal_eligible_expiries": 0,
-            "discovery_90_plus": 0,
-            "discovery_80_89": 0,
-            "discovery_65_79": 0,
-            "discovery_40_64": 0,
-            "discovery_below_40": 0,
-            "unavailable": 0,
-            "cold_start": 0,
-        },
-        "top_expiries": [],
-        "zero_dte_status": [],
-        "structural_cold_start": [],
-        "specification_version": "signal_spec_v1.3_phase2a",
-        "threshold_profile": {
-            "profile_id": "radar_material_event",
-            "version": "2026-08-13.v1",
-            "enabled": True,
-            "min_premium_usd": "150000",
-            "min_abs_oi_diff": 2500,
-            "calibration_review_sessions": 20,
-            "configuration_hash": (
-                "53cf4e40bbbd1d7efdeaf21e1443610726009747466dae81908ac0a84dad8a33"
-            ),
-        },
-        "radar_filters": {"min_premium_usd": 150000.0, "min_abs_oi_diff": 2500},
-        "latest_contract_events": [],
-        "all_material_contract_events": [],
-        "persistent_positioning": [],
-        "unusual_expiry_activity": [],
-        "research_candidates": [],
-        "route_counts": {
-            "radar_events": 0,
-            "persistent_contracts": 0,
-            "expiry_activity": 0,
-            "expiry_persistence": 0,
-            "structural_cold_start": 0,
-            "multiple_routes": 0,
-        },
-        "legacy_v12_available": False,
+    payload = response.json()
+    assert payload["run_state"] == "NOT_RUN"
+    assert payload["scan"] is None
+    assert payload["legacy_phase2a"] is None
+    assert payload["specification_version"] == "phase2a_vnext_stage4b"
+    assert payload["architecture"] == {
+        "active_discovery": ["RADAR_EVENT", "EXPIRY_ACTIVITY", "CONTRACT_PERSISTENCE"],
+        "removed_active_discovery": [
+            "EXPIRY_PERSISTENCE",
+            "STRUCTURAL_COLD_START",
+            "EVIDENCE_BREADTH",
+        ],
+        "candidate_entity": "TICKER_PRODUCT_PROJECTION",
+        "anomaly_entity": "CONTRACT_OR_EXPIRY",
+        "persisted_product_candidate_created": False,
     }
+    assert payload["research_candidates"] == []
+    assert payload["anomaly_pool"] == []
+    assert payload["route_counts"] == {
+        "radar_events": 0,
+        "expiry_activity": 0,
+        "contract_persistence_current_triggers": 0,
+        "contract_persistence_analytics": 0,
+        "product_candidates": 0,
+    }
+    assert payload["persistence_current_trigger_freshness"]["mode"] == (
+        "CALIBRATION_REQUIRED"
+    )
 
 
 def test_scan_run_state_distinguishes_success_failure_running_and_not_run() -> None:
