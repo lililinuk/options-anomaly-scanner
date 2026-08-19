@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
@@ -212,6 +213,166 @@ class ProductCandidateTrigger(Base):
         if key in self.__dict__ and self.__dict__[key] is not None:
             if self.__dict__[key] != value:
                 raise ValueError(f"ProductCandidateTrigger.{key} is immutable")
+        return value
+
+
+class ProductCandidateContext(Base):
+    """One immutable Stage 6 Balanced Model evaluation for a ProductCandidate."""
+
+    __tablename__ = "product_candidate_contexts"
+    __table_args__ = (
+        CheckConstraint(
+            "evaluation_kind IN ('FIRST_KNOWLEDGE_BASELINE', 'REFRESH')",
+            name="product_candidate_context_evaluation_kind_allowed",
+        ),
+        CheckConstraint(
+            "context_evaluated_at >= candidate_first_knowledge_at",
+            name="product_candidate_context_time_order",
+        ),
+        Index(
+            "uq_product_candidate_stage6_baseline",
+            "product_candidate_id",
+            "context_specification_version",
+            "context_config_hash",
+            unique=True,
+            postgresql_where=text(
+                "evaluation_kind = 'FIRST_KNOWLEDGE_BASELINE'"
+            ),
+            sqlite_where=text("evaluation_kind = 'FIRST_KNOWLEDGE_BASELINE'"),
+        ),
+        Index(
+            "ix_product_candidate_context_history",
+            "product_candidate_id",
+            "context_evaluated_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    product_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("product_candidates.id"), nullable=False
+    )
+    evaluation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    candidate_first_knowledge_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    context_evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    price_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    context_specification_version: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    context_config_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    context_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    price_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    volatility_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    dealer_gex_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    availability: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    details: Mapped[list["AnomalyContextDetail"]] = relationship(
+        back_populates="product_candidate_context",
+        cascade="all, delete-orphan",
+        order_by="AnomalyContextDetail.id",
+        lazy="selectin",
+    )
+
+    @validates(
+        "product_candidate_id",
+        "evaluation_kind",
+        "candidate_first_knowledge_at",
+        "context_evaluated_at",
+        "context_specification_version",
+        "context_config_version",
+        "context_config_hash",
+    )
+    def _validate_immutable_identity(self, key: str, value: Any) -> Any:
+        if key in self.__dict__ and self.__dict__[key] != value:
+            raise ValueError(f"ProductCandidateContext.{key} is immutable")
+        return value
+
+
+class AnomalyContextDetail(Base):
+    """Immutable Stage 6 context for one persisted ProductCandidateTrigger."""
+
+    __tablename__ = "anomaly_context_details"
+    __table_args__ = (
+        UniqueConstraint(
+            "product_candidate_context_id",
+            "product_candidate_trigger_id",
+            name="uq_anomaly_context_evaluation_trigger",
+        ),
+        CheckConstraint(
+            "anomaly_entity_type IN ('CONTRACT', 'EXPIRY')",
+            name="anomaly_context_entity_allowed",
+        ),
+        CheckConstraint(
+            "(anomaly_entity_type = 'CONTRACT' "
+            "AND contract_snapshot IS NOT NULL "
+            "AND expiry_activity_recap IS NULL) OR "
+            "(anomaly_entity_type = 'EXPIRY' "
+            "AND contract_snapshot IS NULL "
+            "AND expiry_activity_recap IS NOT NULL)",
+            name="anomaly_context_payload_matches_entity",
+        ),
+        Index(
+            "ix_anomaly_context_trigger_history",
+            "product_candidate_trigger_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    product_candidate_context_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("product_candidate_contexts.id"), nullable=False
+    )
+    product_candidate_trigger_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("product_candidate_triggers.id"), nullable=False
+    )
+    anomaly_entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    anomaly_identity: Mapped[str] = mapped_column(String(128), nullable=False)
+    event_date: Mapped[date | None] = mapped_column(Date)
+    expiry_anchor: Mapped[date | None] = mapped_column(Date)
+    source_first_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    vendor_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    local_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quote_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    contract_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    expiry_activity_recap: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    volatility_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    dealer_gex_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    deep_dive_references: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    availability: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    product_candidate_context: Mapped[ProductCandidateContext] = relationship(
+        back_populates="details"
+    )
+
+    @validates(
+        "product_candidate_context_id",
+        "product_candidate_trigger_id",
+        "anomaly_entity_type",
+        "anomaly_identity",
+        "event_date",
+        "expiry_anchor",
+        "source_first_received_at",
+        "vendor_observed_at",
+        "local_captured_at",
+        "quote_as_of",
+    )
+    def _validate_immutable_identity(self, key: str, value: Any) -> Any:
+        if key in self.__dict__ and self.__dict__[key] is not None:
+            if self.__dict__[key] != value:
+                raise ValueError(f"AnomalyContextDetail.{key} is immutable")
         return value
 
 
