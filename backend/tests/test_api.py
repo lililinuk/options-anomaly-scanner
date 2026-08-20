@@ -71,10 +71,24 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
         rate_limit=60,
         rate_limit_remaining=58,
     )
+    scan = SimpleNamespace(
+        status="COMPLETE",
+        started_at=datetime(2026, 8, 19, 19, 0, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 19, 19, 2, tzinfo=timezone.utc),
+        consumed_quota_units=14,
+    )
+    daily = SimpleNamespace(
+        completed_at=datetime(2026, 8, 19, 20, 10, tzinfo=timezone.utc),
+        ny_market_date=date(2026, 8, 19),
+    )
+    dealer = SimpleNamespace(
+        vendor_observed_at=datetime(2026, 8, 19, 19, 30, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 8, 19, 19, 31, tzinfo=timezone.utc),
+    )
 
     class FakeSession:
         def __init__(self) -> None:
-            self.values = iter([refresh, usage])
+            self.values = iter([refresh, usage, scan, daily, dealer])
             self.scalar_statements = []
 
         def execute(self, _statement):  # type: ignore[no-untyped-def]
@@ -94,8 +108,12 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "scanner_status": "not_scheduled",
-        "latest_scan_at": None,
+        "scanner_status": "COMPLETE",
+        "latest_scan_at": "2026-08-19T19:02:00Z",
+        "latest_scan_status": "COMPLETE",
+        "latest_scan_started_at": "2026-08-19T19:00:00Z",
+        "latest_scan_completed_at": "2026-08-19T19:02:00Z",
+        "latest_scan_consumed_quota_units": 14,
         "nightwatch_status": "connected",
         "latest_capability_refresh_at": "2026-08-10T12:00:00Z",
         "quota_limit": 100000,
@@ -105,6 +123,10 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
         "latest_request_status": 200,
         "database_status": "connected",
         "scheduling_enabled": False,
+        "daily_collection_last_success_at": "2026-08-19T20:10:00Z",
+        "daily_collection_market_date": "2026-08-19",
+        "dealer_archive_last_vendor_observed_at": "2026-08-19T19:30:00Z",
+        "dealer_archive_last_captured_at": "2026-08-19T19:31:00Z",
     }
     assert "/v1/discover" not in str(session.scalar_statements[1])
 

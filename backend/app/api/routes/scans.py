@@ -17,9 +17,14 @@ from app.db.models import (
     OiChangeRadarObservation,
     ScanRun,
     StrikeCluster,
+    ZeroDteActivitySessionSnapshot,
 )
 from app.db.session import get_db_session
 from app.nightwatch.client import NightwatchClient
+from app.scanner.candidate_persistence import (
+    load_product_candidates_for_scan,
+    product_candidate_public,
+)
 from app.scanner.candidate_projection import (
     contract_deep_dive as _shared_contract_deep_dive,
 )
@@ -125,6 +130,8 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
         empty = {
             "run_state": "NOT_RUN",
             "scan": None,
+            "product_candidates_state": "NOT_YET_AVAILABLE",
+            "product_candidates": [],
             "zero_dte_status": [],
             "legacy_phase2a": None,
         }
@@ -255,6 +262,19 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
         normal_eligible, key=lambda row: float(row.same_day_activity_score or 0), reverse=True
     )[:15]
     zero_dte = [row for row in expiries if row.dte_at_detection == 0]
+    zero_dte_snapshot_kind = {
+        row.ticker: row.snapshot_kind
+        for row in (
+            session.scalars(
+                select(ZeroDteActivitySessionSnapshot).where(
+                    ZeroDteActivitySessionSnapshot.scan_run_id == run.id
+                )
+            )
+            if zero_dte
+            else []
+        )
+    }
+    persisted_candidates = load_product_candidates_for_scan(session, run.id)
     cold_only = [
         row
         for row in expiries
@@ -277,7 +297,24 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
             else None,
             "archive_completed_at": archive.completed_at if archive else None,
         },
-        "zero_dte_status": [_zero_dte_public(row) for row in zero_dte],
+        "product_candidates_state": (
+            "AVAILABLE"
+            if run.candidate_materialized_at is not None
+            else "NOT_YET_AVAILABLE"
+        ),
+        "product_candidates": [
+            product_candidate_public(candidate) for candidate in persisted_candidates
+        ],
+        "zero_dte_status": [
+            _zero_dte_public(
+                row,
+                current_snapshot_kind=zero_dte_snapshot_kind.get(
+                    row.ticker,
+                    "LEGACY_OR_AMBIGUOUS",
+                ),
+            )
+            for row in zero_dte
+        ],
         "legacy_phase2a": {
             "source_specification_version": run.specification_version,
             "not_used_for_vnext_candidate_qualification": True,
@@ -655,7 +692,12 @@ def _expiry_public(row: ExpiryObservation) -> dict[str, Any]:
     }
 
 
-def _zero_dte_public(row: ExpiryObservation) -> dict[str, Any]:
+def _zero_dte_public(
+    row: ExpiryObservation,
+    *,
+    current_snapshot_kind: str = "LEGACY_OR_AMBIGUOUS",
+) -> dict[str, Any]:
+    observation_count = row.baseline_observation_count or 0
     return {
         **_expiry_public(row),
         "current_expiry_volume": row.current_expiry_volume,
@@ -665,6 +707,12 @@ def _zero_dte_public(row: ExpiryObservation) -> dict[str, Any]:
         "baseline_status": row.same_day_baseline_status,
         "baseline_observation_count": row.baseline_observation_count,
         "baseline_required": LIMITS.zero_dte_baseline_observations,
+        "current_snapshot_kind": current_snapshot_kind,
+        "canonical_history_maturity": (
+            "AVAILABLE"
+            if observation_count >= LIMITS.zero_dte_baseline_observations
+            else "HISTORY_IMMATURE"
+        ),
         "baseline_mean": _float(row.baseline_20_mean_volume_share),
         "baseline_median": _float(row.baseline_20_median_volume_share),
         "baseline_mad": _float(row.baseline_20_mad_volume_share),
