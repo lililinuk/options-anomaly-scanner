@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import Enum
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,30 @@ def zero_dte_snapshot_kind(snapshot: object) -> ZeroDteSnapshotKind:
     if value is None:
         return ZeroDteSnapshotKind.LEGACY_OR_AMBIGUOUS
     return ZeroDteSnapshotKind(value)
+
+
+@dataclass(frozen=True)
+class RadarOiSchedulePlan:
+    market_date: date
+    should_collect: bool
+    status: str
+
+
+def radar_oi_schedule_plan(now: datetime) -> RadarOiSchedulePlan:
+    """Keep scheduled Radar/OI inside the evidence-backed XNYS morning window."""
+
+    aware_now = ensure_utc(now)
+    local_now = aware_now.astimezone(NEW_YORK)
+    market_day = local_now.date()
+    calendar = xcals.get_calendar("XNYS")
+    session_label = pd.Timestamp(market_day.isoformat())
+    if not calendar.is_session(session_label):
+        return RadarOiSchedulePlan(market_day, False, "SKIPPED_NON_TRADING_SESSION")
+    if local_now.time() < time(6, 0):
+        return RadarOiSchedulePlan(market_day, False, "SKIPPED_BEFORE_SOURCE_READY")
+    if local_now.time() > time(8, 0):
+        return RadarOiSchedulePlan(market_day, False, "SKIPPED_AFTER_SAFE_WINDOW")
+    return RadarOiSchedulePlan(market_day, True, "READY")
 
 
 @dataclass(frozen=True)
