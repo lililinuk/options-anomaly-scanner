@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from time import perf_counter
 from typing import Any
@@ -21,9 +21,9 @@ from app.db.models import (
     ExpiryOiDailySnapshot,
     OiChangeRadarObservation,
     RawVendorPayload,
-    ZeroDteActivityDailySnapshot,
+    ZeroDteActivitySessionSnapshot,
 )
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.models.signals import calendar_dte
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
@@ -31,6 +31,11 @@ from app.nightwatch.models import ApiUsageEvent, NightwatchResult
 from app.persistence.api_usage import persist_api_usage
 from app.scanner.archive import ArchiveSummary, DailyOiArchiver
 from app.scanner.config import ARCHIVE_LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE
+from app.scanner.daily_semantics import (
+    DailyPipelineMode,
+    ZeroDteSnapshotKind,
+    activity_session_plan,
+)
 from app.scanner.history import OiHistoryPoint, contract_persistence
 from app.scanner.parsers import (
     parse_expiry_aggregates,
@@ -104,9 +109,16 @@ class DailyDataPipeline:
         self.run: DailyCollectionRun | None = None
         self.budget = CollectionBudget(session)
 
-    async def execute(self, *, trigger: str = "cli") -> DailyCollectionSummary:
+    async def execute(
+        self,
+        *,
+        trigger: str = "cli",
+        mode: DailyPipelineMode | str = DailyPipelineMode.ALL,
+        started_at: datetime | None = None,
+    ) -> DailyCollectionSummary:
         started_clock = perf_counter()
-        now = utc_now()
+        now = started_at or utc_now()
+        selected_mode = DailyPipelineMode(mode)
         if not bool(
             self.session.scalar(text("SELECT pg_try_advisory_lock(hashtext('mag7_daily_v13'))"))
         ):
@@ -125,6 +137,10 @@ class DailyDataPipeline:
                     "universe": list(UNIVERSE),
                     "daily_oi_archive": asdict(ARCHIVE_LIMITS),
                     "radar_discovery": self.profile.snapshot(),
+                    "pipeline_mode": selected_mode.value,
+                    "radar_oi_schedule_activation": "ACTIVE_EVIDENCE_BACKED",
+                    "radar_oi_schedule_timezone": "America/New_York",
+                    "radar_oi_schedule_time": "06:30",
                 },
                 subjobs={},
                 summary={},
@@ -134,22 +150,25 @@ class DailyDataPipeline:
 
             subjobs: dict[str, dict[str, Any]] = {}
             oi_consumed = oi_attempts = 0
-            try:
-                oi = await DailyOiArchiver(self.session, self.client).execute(
-                    trigger="daily_pipeline"
-                )
-                oi_consumed, oi_attempts = oi.consumed_quota_units, oi.network_attempts
-                subjobs["daily_oi"] = _archive_summary(oi)
-            except Exception as error:
-                subjobs["daily_oi"] = _failed_subjob(error)
+            if selected_mode in {DailyPipelineMode.ALL, DailyPipelineMode.RADAR_OI}:
+                try:
+                    oi = await DailyOiArchiver(self.session, self.client).execute(
+                        trigger="daily_pipeline"
+                    )
+                    oi_consumed, oi_attempts = oi.consumed_quota_units, oi.network_attempts
+                    subjobs["daily_oi"] = _archive_summary(oi)
+                except Exception as error:
+                    subjobs["daily_oi"] = _failed_subjob(error)
 
             self.client._usage_observer = self.budget.observe
-            activity = await self._isolated(
-                "activity", lambda: DailyActivityCollector(self).execute()
-            )
-            subjobs["activity"] = asdict(activity)
-            radar = await self._isolated("radar", lambda: DailyRadarCollector(self).execute())
-            subjobs["radar"] = asdict(radar)
+            if selected_mode in {DailyPipelineMode.ALL, DailyPipelineMode.ACTIVITY}:
+                activity = await self._isolated(
+                    "activity", lambda: DailyActivityCollector(self).execute()
+                )
+                subjobs["activity"] = asdict(activity)
+            if selected_mode in {DailyPipelineMode.ALL, DailyPipelineMode.RADAR_OI}:
+                radar = await self._isolated("radar", lambda: DailyRadarCollector(self).execute())
+                subjobs["radar"] = asdict(radar)
 
             statuses = [str(item["status"]) for item in subjobs.values()]
             status = daily_pipeline_status(statuses)
@@ -196,7 +215,7 @@ class DailyDataPipeline:
             vendor_request_id=result.vendor_request_id,
             payload=result.payload,
             ticker=ticker,
-            observed_at=utc_now(),
+            vendor_observed_at=parse_vendor_observed_at(result.payload),
         )
         self.session.commit()
         return result, raw
@@ -279,7 +298,23 @@ class DailyActivityCollector:
 
     async def execute(self) -> SubjobSummary:
         assert self.pipeline.run
-        observation_date = self.pipeline.run.ny_market_date
+        plan = activity_session_plan(self.pipeline.run.started_at)
+        if not plan.should_collect:
+            return SubjobSummary(
+                plan.status,
+                0,
+                len(UNIVERSE),
+                0,
+                {
+                    "market_date": plan.market_date.isoformat(),
+                    "session_close_at": plan.session_close_at.isoformat()
+                    if plan.session_close_at
+                    else None,
+                    "network_request_performed": False,
+                },
+            )
+        assert plan.session_close_at is not None
+        observation_date = plan.market_date
         attempted = skipped = persisted = 0
         errors: dict[str, str] = {}
         for ticker in UNIVERSE:
@@ -287,7 +322,11 @@ class DailyActivityCollector:
                 select(DailyCollectionCoverage.id).where(
                     DailyCollectionCoverage.subjob == "ACTIVITY",
                     DailyCollectionCoverage.ticker == ticker,
-                    DailyCollectionCoverage.observation_date == observation_date,
+                    func.coalesce(
+                        DailyCollectionCoverage.activity_market_date,
+                        DailyCollectionCoverage.observation_date,
+                    )
+                    == observation_date,
                     DailyCollectionCoverage.status == "COMPLETE",
                 )
             )
@@ -314,6 +353,8 @@ class DailyActivityCollector:
                 if not aggregates:
                     raise ValueError("No scoped expiry activity rows")
                 context = parse_ticker_activity(context_result.payload)
+                if context.vendor_date != observation_date:
+                    raise ValueError("Activity payload vendor date does not match XNYS session")
                 total_volume = sum(row.total_volume for row in aggregates)
                 source_ids = [
                     activity_result.vendor_request_id or activity_result.request_id,
@@ -360,6 +401,7 @@ class DailyActivityCollector:
                             share,
                             activity_raw,
                             source_ids[0],
+                            plan.session_close_at,
                         )
                 self.session.add(
                     DailyCollectionCoverage(
@@ -367,6 +409,8 @@ class DailyActivityCollector:
                         subjob="ACTIVITY",
                         ticker=ticker,
                         observation_date=observation_date,
+                        activity_market_date=observation_date,
+                        vendor_oi_date=None,
                         vendor_as_of=context.vendor_as_of,
                         captured_at=utc_now(),
                         status="COMPLETE",
@@ -377,6 +421,8 @@ class DailyActivityCollector:
                             if context.vendor_date
                             else None,
                             "ny_market_date": observation_date.isoformat(),
+                            "session_close_at": plan.session_close_at.isoformat(),
+                            "session_completeness": "CANONICAL_SESSION_COMPLETE",
                         },
                     )
                 )
@@ -396,23 +442,29 @@ class DailyActivityCollector:
         share: float,
         raw: RawVendorPayload,
         source_request_id: str,
+        session_close_at: datetime,
     ) -> None:
         assert self.pipeline.run
         existing = self.session.scalar(
-            select(ZeroDteActivityDailySnapshot.id).where(
-                ZeroDteActivityDailySnapshot.ticker == ticker,
-                ZeroDteActivityDailySnapshot.observation_date == observation_date,
+            select(ZeroDteActivitySessionSnapshot.id).where(
+                ZeroDteActivitySessionSnapshot.ticker == ticker,
+                ZeroDteActivitySessionSnapshot.observation_date == observation_date,
+                ZeroDteActivitySessionSnapshot.snapshot_kind
+                == ZeroDteSnapshotKind.CANONICAL_SESSION_COMPLETE.value,
             )
         )
         if existing:
             return
         self.session.add(
-            ZeroDteActivityDailySnapshot(
+            ZeroDteActivitySessionSnapshot(
                 scan_run_id=None,
                 daily_run_id=self.pipeline.run.id,
                 ticker=ticker,
                 observation_date=observation_date,
                 expiration=observation_date,
+                snapshot_kind=ZeroDteSnapshotKind.CANONICAL_SESSION_COMPLETE.value,
+                captured_at=utc_now(),
+                session_close_at=session_close_at,
                 expiry_volume=expiry_volume,
                 ticker_scope_volume=scope_volume,
                 volume_share=_decimal(share),
@@ -455,7 +507,11 @@ class DailyRadarCollector:
                     select(DailyCollectionCoverage.id).where(
                         DailyCollectionCoverage.subjob == "RADAR",
                         DailyCollectionCoverage.ticker == ticker,
-                        DailyCollectionCoverage.observation_date == observation_date,
+                        func.coalesce(
+                            DailyCollectionCoverage.vendor_oi_date,
+                            DailyCollectionCoverage.observation_date,
+                        )
+                        == observation_date,
                         DailyCollectionCoverage.status == "COMPLETE",
                     )
                 )
@@ -483,6 +539,8 @@ class DailyRadarCollector:
                         subjob="RADAR",
                         ticker=ticker,
                         observation_date=observation_date,
+                        activity_market_date=None,
+                        vendor_oi_date=observation_date,
                         vendor_as_of=None,
                         captured_at=utc_now(),
                         status="COMPLETE",
@@ -593,8 +651,8 @@ class DailyRadarCollector:
                 current_same_side_expiry_oi=None,
             )
             structure = structure_by_symbol.get(row.contract_symbol)
-            row.captured_at = utc_now()
-            row.ny_market_date = self.pipeline.run.ny_market_date
+            # Re-evaluation may populate versioned analytical fields, but the existing
+            # source row's original local capture identity is immutable.
             row.material_event_eligible = eligibility.eligible
             row.radar_route_eligible = eligibility.eligible
             row.eligibility_reason = eligibility.reason
@@ -626,7 +684,11 @@ class DailyRadarCollector:
                 select(DailyCollectionCoverage.id).where(
                     DailyCollectionCoverage.subjob == "RADAR",
                     DailyCollectionCoverage.ticker == ticker,
-                    DailyCollectionCoverage.observation_date == observation_date,
+                    func.coalesce(
+                        DailyCollectionCoverage.vendor_oi_date,
+                        DailyCollectionCoverage.observation_date,
+                    )
+                    == observation_date,
                 )
             )
             if existing:
@@ -637,6 +699,8 @@ class DailyRadarCollector:
                     subjob="RADAR",
                     ticker=ticker,
                     observation_date=observation_date,
+                    activity_market_date=None,
+                    vendor_oi_date=observation_date,
                     vendor_as_of=None,
                     captured_at=utc_now(),
                     status="COMPLETE",
@@ -652,7 +716,14 @@ class DailyRadarCollector:
 
     def _target_tickers(self) -> tuple[str, ...]:
         latest = self.session.scalar(
-            select(func.max(DailyCollectionCoverage.observation_date)).where(
+            select(
+                func.max(
+                    func.coalesce(
+                        DailyCollectionCoverage.vendor_oi_date,
+                        DailyCollectionCoverage.observation_date,
+                    )
+                )
+            ).where(
                 DailyCollectionCoverage.subjob == "RADAR",
                 DailyCollectionCoverage.status == "COMPLETE",
             )
@@ -663,7 +734,11 @@ class DailyRadarCollector:
             self.session.scalars(
                 select(DailyCollectionCoverage.ticker).where(
                     DailyCollectionCoverage.subjob == "RADAR",
-                    DailyCollectionCoverage.observation_date == latest,
+                    func.coalesce(
+                        DailyCollectionCoverage.vendor_oi_date,
+                        DailyCollectionCoverage.observation_date,
+                    )
+                    == latest,
                     DailyCollectionCoverage.status == "COMPLETE",
                 )
             )
@@ -835,6 +910,8 @@ def missing_coverage_tickers(covered: Iterable[str]) -> tuple[str, ...]:
 
 def daily_pipeline_status(statuses: Iterable[str]) -> str:
     values = list(statuses)
+    if values and all(value.startswith("SKIPPED_") for value in values):
+        return values[0] if len(set(values)) == 1 else "SKIPPED"
     if values and all(value in {"COMPLETE", "NO_NEW_DATA"} for value in values):
         return "COMPLETE"
     if values and all(value == "FAILED" for value in values):

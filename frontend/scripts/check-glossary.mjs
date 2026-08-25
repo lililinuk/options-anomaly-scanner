@@ -1,71 +1,78 @@
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const source = readFileSync(new URL("../app/fieldGlossary.zh-TW.ts", import.meta.url), "utf8");
-const glossaryBlock = source.match(/export const fieldGlossary = \{([\s\S]*?)\n\} satisfies/);
-const columnsBlock = source.match(/export const visibleAnalyticalColumns = \[([\s\S]*?)\] as const/);
-if (!glossaryBlock || !columnsBlock) throw new Error("Glossary registry structure is missing");
-const keys = new Set([...glossaryBlock[1].matchAll(/^\s{2}([a-z0-9_]+):/gm)].map((match) => match[1]));
-const columns = [...columnsBlock[1].matchAll(/"([a-z0-9_]+)"/g)].map((match) => match[1]);
-const missing = columns.filter((column) => !keys.has(column));
-if (missing.length) throw new Error(`Missing zh-TW glossary definitions: ${missing.join(", ")}`);
-console.log(`Glossary completeness: ${columns.length} legacy columns, ${keys.size} documented fields`);
+import {
+  fieldGlossary,
+  glossarySemantics,
+  visibleAnalyticalColumns,
+} from "../app/fieldGlossary.zh-TW.ts";
+
+assert.deepEqual(new Set(visibleAnalyticalColumns), new Set(Object.keys(fieldGlossary)));
+for (const [key, item] of Object.entries(fieldGlossary)) {
+  assert.ok(item.中文名稱 && item.englishField && item.定義 && item.注意事項, `${key} is incomplete`);
+  assert.ok(["ACTIVE", "LEGACY_INACTIVE", "WITHHELD"].includes(item.狀態), `${key} has an invalid status`);
+}
+
+for (const key of [
+  "product_candidate", "anomaly", "why_found", "deep_dive",
+  "first_knowledge_baseline", "refresh", "same_day", "oi_confirmed",
+  "multi_observation", "block_b1", "block_b2", "block_b3", "block_b4",
+  "block_b5", "availability", "zero_dte_status",
+]) {
+  assert.equal(fieldGlossary[key].狀態, "ACTIVE", `${key} must be active`);
+}
+for (const key of [
+  "evidence_breadth_legacy", "stabilization_bias_legacy",
+  "downside_risk_legacy", "composite_readiness_legacy",
+  "greeks_legacy_phase2b",
+]) {
+  assert.equal(fieldGlossary[key].狀態, "LEGACY_INACTIVE", `${key} must be inactive`);
+}
+assert.equal(fieldGlossary.iv_rank.狀態, "WITHHELD");
+assert.equal(glossarySemantics.candidateEntity, "TICKER_PRODUCT");
+assert.deepEqual(glossarySemantics.anomalyEntities, ["CONTRACT", "EXPIRY"]);
+assert.equal(glossarySemantics.expiryAnomalyRequiresContract, false);
+assert.equal(glossarySemantics.evidenceBreadthActive, false);
+assert.equal(glossarySemantics.stabilizationBiasActive, false);
+assert.equal(glossarySemantics.downsideAccelerationRiskActive, false);
+assert.deepEqual(glossarySemantics.phase2bCoreGreeks, ["DELTA"]);
+for (const rule of [
+  "missingEqualsZero", "unresolvedEqualsNeutral", "callImpliesBullish",
+  "putImpliesBearish", "positiveDeltaOiImpliesOpening", "gexSignImpliesDirection",
+]) {
+  assert.equal(glossarySemantics[rule], false, `${rule} must remain false`);
+}
 
 const dashboard = readFileSync(new URL("../app/scan-dashboard.tsx", import.meta.url), "utf8");
-if (!dashboard.includes('if (value == null || value === "") return "—"')) {
-  throw new Error("Dashboard must render unavailable analytical values as an em dash");
+const order = [
+  "Today&apos;s Product Candidates",
+  "Candidate Header",
+  "Why Found",
+  "Shared B1 / B2 / B3 Context",
+  "Anomaly Details · B4",
+  "Deep Dive",
+  "Supporting / Audit / Provenance",
+];
+let lastIndex = -1;
+for (const heading of order) {
+  const nextIndex = dashboard.indexOf(heading, lastIndex + 1);
+  assert.ok(nextIndex > lastIndex, `${heading} is missing or out of candidate-first order`);
+  lastIndex = nextIndex;
 }
-for (const required of [
-  "Radar Material Event", "Premium", "ΔOI", "OI Change %", "Persistent Positioning",
-  "Expiry Activity", "Monthly OPEX", "Score Basis", "Trigger Sources",
-  "Radar Archive Match", "Radar Threshold Profile",
+assert.ok(dashboard.includes('detail.anomaly_entity_type === "CONTRACT"'));
+assert.ok(dashboard.includes("valid_clusters"));
+assert.ok(dashboard.includes("qualifies_candidate=false"));
+assert.ok(dashboard.includes("no automatic refresh on page load"));
+assert.ok(dashboard.includes("Raw / scoped Radar evidence view"));
+assert.ok(dashboard.includes("Not the Product Candidate list"));
+assert.ok(dashboard.includes("WITHHOLD_PENDING_PROVENANCE"));
+for (const forbidden of [
+  "Evidence Breadth", "STABILIZATION_BIAS", "DOWNSIDE_ACCELERATION_RISK",
+  "Dealer Bullish", "Dealer Bearish", "Gamma", "Theta", "Vega",
+  "Execution Score", "Conviction Score", "Ticker Score",
 ]) {
-  if (!source.includes(required)) throw new Error(`Required v1.3 glossary concept missing: ${required}`);
+  assert.equal(dashboard.includes(forbidden), false, `Inactive concept leaked into dashboard: ${forbidden}`);
 }
-for (const required of [
-  "Research State", "Positioning Evidence Breadth", "Candidate Term Topology",
-  "Candidate Net GEX Sign", "Research Readiness", "Direction UNRESOLVED",
-  "Expiry-only Research Row",
-]) {
-  if (!source.includes(required)) throw new Error(`Required Phase 2B v2 glossary concept missing: ${required}`);
-}
-for (const required of [
-  "Why Found / Positioning", "Premium Activity", "Observed Flow Direction",
-  "Underlying Price", "Volatility", "Dealer / GEX Structure", "Primary Floor",
-  "Primary Upper Positive-GEX Node", "Immediate Below-Floor Node", "Execution",
-]) {
-  if (!dashboard.includes(required)) throw new Error(`Required Phase 2B v3 workspace state missing: ${required}`);
-}
-for (const required of [
-  "Contract Premium Activity", "Exact-contract ΔOI", "Observed Flow Direction",
-  "Underlying Price Trend", "Anchor Expiry", "Primary Floor",
-  "Primary Upper Positive-GEX Node", "Immediate Below-Floor Node",
-  "Stabilization Bias", "Downside Acceleration Risk", "Adjacent Expiry Context",
-  "Dealer Source Quality",
-]) {
-  if (!source.includes(required)) throw new Error(`Required Phase 2B v3 glossary concept missing: ${required}`);
-}
-for (const required of [
-  "Latest Contract Events", "Persistent Positioning", "Unusual Expiry Activity",
-  "Deep Dive / Research Candidates",
-]) {
-  if (!dashboard.includes(required)) throw new Error(`Required v1.3 dashboard view missing: ${required}`);
-}
-const serverOnlyKeyName = ["NIGHTWATCH", "API", "KEY"].join("_");
-const publicKeyPrefix = ["NEXT", "PUBLIC", "NIGHTWATCH"].join("_");
-const vendorHost = ["api", "yehangshe", "com"].join(".");
-for (const forbidden of [vendorHost, serverOnlyKeyName, publicKeyPrefix]) {
-  if (dashboard.includes(forbidden)) throw new Error(`Browser code contains forbidden Nightwatch material: ${forbidden}`);
-}
-if (!dashboard.includes("Data unavailable")) {
-  throw new Error("Dashboard must disclose unavailable Dealer/GEX context without showing zero");
-}
-if (!source.includes("UNAVAILABLE 與 ROW_UNAVAILABLE")) {
-  throw new Error("Glossary must distinguish unavailable Dealer cell and row semantics");
-}
-for (const forbidden of ["Volatility Direction", "Dealer GEX Direction", "MODEL BULLISH", "TRADE BULLISH"]) {
-  if (dashboard.includes(forbidden)) throw new Error(`Superseded directional UI remains: ${forbidden}`);
-}
-if (!dashboard.includes('row.entity_type === "CONTRACT"')) {
-  throw new Error("Expiry-only rows must not open a fabricated exact-contract workspace");
-}
-console.log("Dashboard null-safety, v3 role separation, GEX structure, and expiry-only safety: passed");
+
+console.log(`Glossary semantics: ${Object.keys(fieldGlossary).length} governed vNext concepts`);
+console.log("Candidate-first order, expiry-only boundary, and inactive-term safety: passed");

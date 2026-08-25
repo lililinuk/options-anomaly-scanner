@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.confirmation.service import Phase2bContextService
 from app.confirmation.state_v2 import Phase2bV2StateService
 from app.confirmation.workspace_v3 import Phase2bV3WorkspaceService
+from app.core.time import utc_now
 from app.db.session import get_session_factory
 from app.dealer_archive.service import (
     DealerGexArchiveConcurrentError,
@@ -21,6 +22,11 @@ from app.persistence.api_usage import persist_api_usage
 from app.persistence.metadata import MetadataRepository
 from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
 from app.scanner.daily import DailyCollectionConcurrentError, DailyDataPipeline, DailyRadarBackfill
+from app.scanner.daily_observation import (
+    DailyObservationNotReady,
+    run_daily_vnext_observation,
+)
+from app.scanner.daily_semantics import DailyPipelineMode, radar_oi_schedule_plan
 from app.scanner.service import ConcurrentScanError
 from app.scanner.v13 import Mag7Scanner
 
@@ -34,15 +40,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands.add_parser(
         "run-mag7-scan",
-        help="Run one budget-bounded manual Phase 2A v1.2 calibrated-discovery scan",
+        help="Run one budget-bounded manual vNext MAG7 scan",
+    )
+    subcommands.add_parser(
+        "run-daily-vnext-observation",
+        help="Run one source-gated vNext MAG7 scan and FIRST_KNOWLEDGE_BASELINE creation",
     )
     subcommands.add_parser(
         "archive-mag7-oi",
         help="Idempotently archive complete 0-180 DTE MAG7 daily OI snapshots",
     )
-    subcommands.add_parser(
+    daily_archive = subcommands.add_parser(
         "archive-mag7-daily",
         help="Run independent daily OI, expiry-activity, and OI-change Radar subjobs",
+    )
+    daily_archive.add_argument(
+        "--mode",
+        choices=[item.value for item in DailyPipelineMode],
+        default=DailyPipelineMode.ALL.value,
+        help="Run canonical Activity, Radar/OI, or the legacy manual all-subjob mode",
+    )
+    daily_archive.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Record durable scheduler invocation; Activity still requires the XNYS close guard",
     )
     subcommands.add_parser(
         "backfill-mag7-radar",
@@ -163,6 +184,38 @@ async def run_mag7_scan() -> int:
     return 0
 
 
+async def run_scheduled_daily_vnext_observation() -> int:
+    settings = get_settings()
+    try:
+        with get_session_factory()() as session:
+            session.execute(text("SELECT 1"))
+            async with NightwatchClient(
+                base_url=str(settings.nightwatch_base_url),
+                api_key=settings.nightwatch_api_key,
+                timeout_seconds=settings.nightwatch_timeout_seconds,
+                max_retries=0,
+                max_concurrency=min(settings.nightwatch_max_concurrency, 4),
+            ) as client:
+                summary = await run_daily_vnext_observation(session, client)
+    except DailyObservationNotReady as error:
+        print(f"Daily vNext observation held before scan: {error}", file=sys.stderr)
+        return 4
+    except ConcurrentScanError as error:
+        print(f"Daily vNext observation not started: {error}", file=sys.stderr)
+        return 4
+    except (SQLAlchemyError, NightwatchError, RuntimeError, ValueError) as error:
+        print(f"Daily vNext observation failed safely: {type(error).__name__}", file=sys.stderr)
+        return 5
+    print(
+        f"Daily vNext observation: scan_run_id={summary.scan_run_id} "
+        f"scan_status={summary.scan_status} observation_status={summary.observation_status} "
+        f"candidates={summary.candidate_count} baselines={summary.baseline_count} "
+        f"consumed_units={summary.consumed_quota_units} "
+        f"network_attempts={summary.network_attempts}"
+    )
+    return 0 if summary.observation_status in {"COMPLETE", "SUCCESS_NO_CANDIDATE"} else 6
+
+
 async def run_archive_mag7_oi() -> int:
     settings = get_settings()
     try:
@@ -198,7 +251,15 @@ async def run_archive_mag7_oi() -> int:
     return 0
 
 
-async def run_archive_mag7_daily() -> int:
+async def run_archive_mag7_daily(*, mode: str, scheduled: bool) -> int:
+    if scheduled and mode == DailyPipelineMode.RADAR_OI.value:
+        plan = radar_oi_schedule_plan(utc_now())
+        if not plan.should_collect:
+            print(
+                f"Scheduled Radar/OI collection skipped: status={plan.status} "
+                f"market_date={plan.market_date}"
+            )
+            return 0
     settings = get_settings()
     try:
         with get_session_factory()() as session:
@@ -210,7 +271,10 @@ async def run_archive_mag7_daily() -> int:
                 max_retries=0,
                 max_concurrency=min(settings.nightwatch_max_concurrency, 4),
             ) as client:
-                summary = await DailyDataPipeline(session, client).execute(trigger="cli")
+                summary = await DailyDataPipeline(session, client).execute(
+                    trigger="scheduled" if scheduled else "cli",
+                    mode=mode,
+                )
     except DailyCollectionConcurrentError as error:
         print(f"Daily MAG7 collection not started: {error}", file=sys.stderr)
         return 4
@@ -260,9 +324,7 @@ async def run_backfill_mag7_radar() -> int:
     return 0
 
 
-async def run_phase2b_context(
-    contracts: list[str], *, force: bool, reuse_latest_raw: bool
-) -> int:
+async def run_phase2b_context(contracts: list[str], *, force: bool, reuse_latest_raw: bool) -> int:
     settings = get_settings()
     collector = ApiUsageCollector()
     try:
@@ -288,8 +350,12 @@ async def run_phase2b_context(
     consumed = sum(event.consumed_quota is True for event in collector.events)
     attempts = sum(event.attempt_count for event in collector.events)
     remaining = next(
-        (event.quota_remaining for event in reversed(collector.events)
-         if event.quota_remaining is not None), None,
+        (
+            event.quota_remaining
+            for event in reversed(collector.events)
+            if event.quota_remaining is not None
+        ),
+        None,
     )
     print(
         f"Phase 2B context: evaluations={len(summary.evaluations)} "
@@ -395,10 +461,12 @@ def main() -> int:
         return asyncio.run(run_refresh_metadata())
     if args.command == "run-mag7-scan":
         return asyncio.run(run_mag7_scan())
+    if args.command == "run-daily-vnext-observation":
+        return asyncio.run(run_scheduled_daily_vnext_observation())
     if args.command == "archive-mag7-oi":
         return asyncio.run(run_archive_mag7_oi())
     if args.command == "archive-mag7-daily":
-        return asyncio.run(run_archive_mag7_daily())
+        return asyncio.run(run_archive_mag7_daily(mode=args.mode, scheduled=args.scheduled))
     if args.command == "backfill-mag7-radar":
         return asyncio.run(run_backfill_mag7_radar())
     if args.command == "refresh-phase2b-context":

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -23,6 +23,14 @@ from app.confirmation.domain import (
     normalize_stock_state,
     strike_location,
 )
+from app.confirmation.provenance import (
+    EvaluationIdentity,
+    aggregate_freshness_anchor_at,
+    aggregate_source_first_received_at,
+    earliest_known,
+    source_time_entry,
+    unavailable_source_time_entry,
+)
 from app.confirmation.state_v2 import latest_v2_state
 from app.confirmation.workspace_v3 import latest_v3_workspace
 from app.core.time import utc_now
@@ -36,7 +44,7 @@ from app.db.models import (
     RawVendorPayload,
     StrikeCluster,
 )
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
 
@@ -49,6 +57,8 @@ class CandidateSource:
     right: str
     strike: Decimal
     dte_at_detection: int | None
+    radar_observation_id: uuid.UUID | None = None
+    source_first_received_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -131,9 +141,18 @@ class Phase2bContextService:
         )
         if radar is None or chain is None:
             return None
+        source_first_received_at = earliest_known(
+            *[
+                raw.received_at
+                for raw_id in (radar.raw_payload_id, chain.raw_payload_id)
+                if (raw := self.session.get(RawVendorPayload, raw_id)) is not None
+            ]
+        )
         return CandidateSource(
             contract_symbol=symbol, ticker=chain.ticker, expiration=chain.expiration,
             right=chain.right, strike=chain.strike, dte_at_detection=radar.matched_dte,
+            radar_observation_id=radar.id,
+            source_first_received_at=source_first_received_at,
         )
 
     def _fresh_context(self, ticker: str) -> Phase2bTickerContextSnapshot | None:
@@ -145,9 +164,9 @@ class Phase2bContextService:
                 Phase2bTickerContextSnapshot.specification_version == PHASE2B_SPEC_VERSION,
                 Phase2bTickerContextSnapshot.config_version == self.config.version,
                 Phase2bTickerContextSnapshot.config_hash == self.config.configuration_hash,
-                Phase2bTickerContextSnapshot.created_at >= cutoff,
+                Phase2bTickerContextSnapshot.freshness_anchor_at >= cutoff,
             )
-            .order_by(desc(Phase2bTickerContextSnapshot.created_at))
+            .order_by(desc(Phase2bTickerContextSnapshot.freshness_anchor_at))
             .limit(1)
         )
 
@@ -165,12 +184,15 @@ class Phase2bContextService:
         """Append current normalization from preserved raw OHLC without a vendor request."""
 
         ohlc_payload: dict[str, Any] | None = None
+        raw_rows: list[RawVendorPayload] = []
         for raw_id in source.raw_payload_ids:
             try:
                 raw_uuid = uuid.UUID(str(raw_id))
             except (TypeError, ValueError):
                 continue
             raw = self.session.get(RawVendorPayload, raw_uuid)
+            if raw is not None:
+                raw_rows.append(raw)
             if raw and raw.endpoint.endswith(f"/stocks/ohlc/{source.ticker}"):
                 if isinstance(raw.payload, dict):
                     ohlc_payload = raw.payload
@@ -189,6 +211,31 @@ class Phase2bContextService:
                 "analytical_availability": heat["availability"],
                 "availability_reason": heat["availability_reason"],
             }
+        source_provenance = getattr(source, "source_time_provenance", None)
+        if not source_provenance:
+            source_provenance = {}
+            for raw in raw_rows:
+                capability = next(
+                    (
+                        name
+                        for name, template, _params in self.ENDPOINTS
+                        if template.format(ticker=source.ticker) in raw.endpoint
+                    ),
+                    "unknown",
+                )
+                source_provenance[capability] = source_time_entry(
+                    raw,
+                    capability=capability,
+                    # Historical Phase 2B wrote local utc_now() into observed_at.
+                    trust_stored_vendor_time=False,
+                )
+        source_first_received_at = getattr(source, "source_first_received_at", None)
+        if source_first_received_at is None:
+            source_first_received_at = earliest_known(*(raw.received_at for raw in raw_rows))
+        freshness_anchor_at = getattr(source, "freshness_anchor_at", None)
+        if freshness_anchor_at is None:
+            # Authoritative raw receipt is safe for legacy reprocess freshness; created_at is not.
+            freshness_anchor_at = earliest_known(*(raw.received_at for raw in raw_rows))
         row = Phase2bTickerContextSnapshot(
             ticker=source.ticker,
             created_at=utc_now(),
@@ -203,7 +250,7 @@ class Phase2bContextService:
             dealer_heatmap=heat,
             source_timestamps={
                 **source.source_timestamps,
-                "heatmap": heat.get("generated_at") or heat.get("capture_timestamp"),
+                "heatmap": heat.get("generated_at"),
             },
             raw_payload_ids=source.raw_payload_ids,
             source_request_ids=source.source_request_ids,
@@ -214,6 +261,9 @@ class Phase2bContextService:
                     "source": "PRESERVED_RAW_PAYLOAD",
                 },
             },
+            source_first_received_at=source_first_received_at,
+            freshness_anchor_at=freshness_anchor_at,
+            source_time_provenance=source_provenance,
         )
         self.session.add(row)
         self.session.flush()
@@ -233,6 +283,7 @@ class Phase2bContextService:
         raw_ids: list[str] = []
         request_ids: list[str] = []
         statuses: dict[str, Any] = {}
+        source_provenance: dict[str, Any] = {}
         ingestor = RawIngestor(self.session)
         for name, template, params in self.ENDPOINTS:
             path = template.format(ticker=ticker)
@@ -252,7 +303,9 @@ class Phase2bContextService:
                     endpoint=path,
                     request_id=request_id,
                     vendor_request_id=result.vendor_request_id,
-                    ticker=ticker, payload=payload, observed_at=utc_now(),
+                    ticker=ticker,
+                    payload=payload,
+                    vendor_observed_at=parse_vendor_observed_at(payload),
                 )
                 payloads[name] = payload
                 raw_ids.append(str(raw.id))
@@ -263,9 +316,15 @@ class Phase2bContextService:
                     "ticker": ticker,
                     "status": result.status_code,
                     "availability": "AVAILABLE",
-                    "captured_at": captured_at.isoformat(),
+                    "captured_at": raw.received_at.isoformat(),
+                    "vendor_observed_at": (
+                        raw.observed_at.isoformat() if raw.observed_at is not None else None
+                    ),
+                    "local_captured_at": raw.received_at.isoformat(),
+                    "source_first_received_at": raw.received_at.isoformat(),
                     "request_id": request_id,
                 }
+                source_provenance[name] = source_time_entry(raw, capability=name)
             except NightwatchError as error:
                 statuses[name] = {
                     "endpoint": path,
@@ -274,8 +333,15 @@ class Phase2bContextService:
                     "status": error.status_code, "availability": "UNAVAILABLE",
                     "error_code": error.code,
                     "captured_at": captured_at.isoformat(),
+                    "vendor_observed_at": None,
+                    "local_captured_at": captured_at.isoformat(),
+                    "source_first_received_at": None,
                     "request_id": error.request_id,
                 }
+                source_provenance[name] = unavailable_source_time_entry(
+                    capability=name,
+                    local_captured_at=captured_at,
+                )
                 if error.request_id:
                     request_ids.append(error.request_id)
         stock = normalize_stock_state(payloads.get("stock_state", {}))
@@ -307,16 +373,23 @@ class Phase2bContextService:
             source_timestamps={
                 "stock_state": stock.get("as_of"), "ohlc": price.get("vendor_as_of"),
                 "iv_rank": iv_rank.get("as_of"), "term_structure": term.get("as_of"),
-                "heatmap": heat.get("generated_at") or heat.get("capture_timestamp"),
+                "heatmap": heat.get("generated_at"),
             },
             raw_payload_ids=raw_ids, source_request_ids=request_ids, endpoint_statuses=statuses,
+            source_first_received_at=aggregate_source_first_received_at(source_provenance),
+            freshness_anchor_at=aggregate_freshness_anchor_at(source_provenance),
+            source_time_provenance=source_provenance,
         )
         self.session.add(row)
         self.session.flush()
         return row
 
     def _evaluation(
-        self, context: Phase2bTickerContextSnapshot, candidate: CandidateSource
+        self,
+        context: Phase2bTickerContextSnapshot,
+        candidate: CandidateSource,
+        *,
+        evaluation_identity: EvaluationIdentity = EvaluationIdentity.REFRESH,
     ) -> Phase2bCandidateEvaluation:
         existing = self.session.scalar(
             select(Phase2bCandidateEvaluation).where(
@@ -325,11 +398,17 @@ class Phase2bContextService:
             )
         )
         if existing is not None:
+            if existing.evaluation_identity not in {None, evaluation_identity.value}:
+                raise ValueError("Existing evaluation identity cannot be overwritten")
             return existing
-        radar = self.session.scalar(
-            select(OiChangeRadarObservation)
-            .where(OiChangeRadarObservation.contract_symbol == candidate.contract_symbol)
-            .order_by(desc(OiChangeRadarObservation.observation_date)).limit(1)
+        radar = (
+            self.session.get(OiChangeRadarObservation, candidate.radar_observation_id)
+            if candidate.radar_observation_id is not None
+            else self.session.scalar(
+                select(OiChangeRadarObservation)
+                .where(OiChangeRadarObservation.contract_symbol == candidate.contract_symbol)
+                .order_by(desc(OiChangeRadarObservation.observation_date)).limit(1)
+            )
         )
         chain = self.session.scalar(
             select(ContractOiDailySnapshot)
@@ -428,11 +507,12 @@ class Phase2bContextService:
             "chain_quote": execution["quote_as_of"], "chain_greeks": execution["greeks_as_of"],
             **context.source_timestamps,
         }
+        evaluated_at = utc_now()
         row = Phase2bCandidateEvaluation(
             ticker_context_id=context.id, contract_symbol=candidate.contract_symbol,
             ticker=candidate.ticker, expiration=candidate.expiration, right=candidate.right,
             strike=candidate.strike, dte_at_detection=candidate.dte_at_detection,
-            evaluated_at=utc_now(),
+            evaluated_at=evaluated_at,
             trigger_sources=(radar.trigger_sources or ["RADAR_EVENT"]) if radar else [],
             phase2a_evidence=phase2a, strike_location=location,
             volatility_context=volatility, dealer_context=dealer, execution_context=execution,
@@ -447,6 +527,12 @@ class Phase2bContextService:
             source_timestamps=source_times, direction="UNRESOLVED",
             specification_version=PHASE2B_SPEC_VERSION, config_version=self.config.version,
             config_hash=self.config.configuration_hash,
+            source_first_received_at=earliest_known(
+                getattr(context, "source_first_received_at", None),
+                candidate.source_first_received_at,
+            ),
+            source_radar_observation_id=candidate.radar_observation_id,
+            evaluation_identity=evaluation_identity.value,
         )
         self.session.add(row)
         self.session.flush()
@@ -469,6 +555,11 @@ def latest_candidate_context(session: Session, contract_symbol: str) -> dict[str
             "right": evaluation.right, "strike": float(evaluation.strike),
             "trigger_sources": evaluation.trigger_sources,
             "direction": evaluation.direction,
+            "source_radar_observation_id": (
+                str(evaluation.source_radar_observation_id)
+                if evaluation.source_radar_observation_id
+                else None
+            ),
         },
         "phase2a": evaluation.phase2a_evidence,
         "price": {"stock_state": ticker.stock_state, "history": ticker.price_context,
@@ -478,6 +569,17 @@ def latest_candidate_context(session: Session, contract_symbol: str) -> dict[str
         "execution": evaluation.execution_context,
         "data_quality": evaluation.evidence_states,
         "timestamps": evaluation.source_timestamps,
+        "time_provenance": {
+            "source_first_received_at": (
+                evaluation.source_first_received_at.isoformat()
+                if evaluation.source_first_received_at
+                else None
+            ),
+            "candidate_first_knowledge_at": None,
+            "context_evaluated_at": evaluation.evaluated_at.isoformat(),
+            "evaluation_identity": evaluation.evaluation_identity,
+            "sources": ticker.source_time_provenance or {},
+        },
         "specification_version": evaluation.specification_version,
         "config_version": evaluation.config_version,
         "evaluated_at": evaluation.evaluated_at.isoformat(),

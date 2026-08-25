@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.routes.scans import _distribution, _max_numeric, _radar_status
+from app.api.routes.scans import _distribution, _max_numeric, _radar_status, _run_state
 from app.db.session import get_db_session
 from app.main import app
 from app.scanner.service import ConcurrentScanError
@@ -71,10 +71,24 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
         rate_limit=60,
         rate_limit_remaining=58,
     )
+    scan = SimpleNamespace(
+        status="COMPLETE",
+        started_at=datetime(2026, 8, 19, 19, 0, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 8, 19, 19, 2, tzinfo=timezone.utc),
+        consumed_quota_units=14,
+    )
+    daily = SimpleNamespace(
+        completed_at=datetime(2026, 8, 19, 20, 10, tzinfo=timezone.utc),
+        ny_market_date=date(2026, 8, 19),
+    )
+    dealer = SimpleNamespace(
+        vendor_observed_at=datetime(2026, 8, 19, 19, 30, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 8, 19, 19, 31, tzinfo=timezone.utc),
+    )
 
     class FakeSession:
         def __init__(self) -> None:
-            self.values = iter([refresh, usage])
+            self.values = iter([refresh, usage, scan, daily, dealer])
             self.scalar_statements = []
 
         def execute(self, _statement):  # type: ignore[no-untyped-def]
@@ -94,8 +108,12 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "scanner_status": "not_scheduled",
-        "latest_scan_at": None,
+        "scanner_status": "COMPLETE",
+        "latest_scan_at": "2026-08-19T19:02:00Z",
+        "latest_scan_status": "COMPLETE",
+        "latest_scan_started_at": "2026-08-19T19:00:00Z",
+        "latest_scan_completed_at": "2026-08-19T19:02:00Z",
+        "latest_scan_consumed_quota_units": 14,
         "nightwatch_status": "connected",
         "latest_capability_refresh_at": "2026-08-10T12:00:00Z",
         "quota_limit": 100000,
@@ -105,6 +123,10 @@ def test_system_status_is_truthful_phase_one_placeholder() -> None:
         "latest_request_status": 200,
         "database_status": "connected",
         "scheduling_enabled": False,
+        "daily_collection_last_success_at": "2026-08-19T20:10:00Z",
+        "daily_collection_market_date": "2026-08-19",
+        "dealer_archive_last_vendor_observed_at": "2026-08-19T19:30:00Z",
+        "dealer_archive_last_captured_at": "2026-08-19T19:31:00Z",
     }
     assert "/v1/discover" not in str(session.scalar_statements[1])
 
@@ -141,52 +163,49 @@ def test_latest_mag7_scan_has_safe_empty_state() -> None:
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json() == {
-        "scan": None,
-        "results": [],
-        "distribution": {
-            "total_expiries": 0,
-            "scored_expiries": 0,
-            "normal_eligible_expiries": 0,
-            "discovery_90_plus": 0,
-            "discovery_80_89": 0,
-            "discovery_65_79": 0,
-            "discovery_40_64": 0,
-            "discovery_below_40": 0,
-            "unavailable": 0,
-            "cold_start": 0,
-        },
-        "top_expiries": [],
-        "zero_dte_status": [],
-        "structural_cold_start": [],
-        "specification_version": "signal_spec_v1.3_phase2a",
-        "threshold_profile": {
-            "profile_id": "radar_material_event",
-            "version": "2026-08-13.v1",
-            "enabled": True,
-            "min_premium_usd": "150000",
-            "min_abs_oi_diff": 2500,
-            "calibration_review_sessions": 20,
-            "configuration_hash": (
-                "53cf4e40bbbd1d7efdeaf21e1443610726009747466dae81908ac0a84dad8a33"
-            ),
-        },
-        "radar_filters": {"min_premium_usd": 150000.0, "min_abs_oi_diff": 2500},
-        "latest_contract_events": [],
-        "all_material_contract_events": [],
-        "persistent_positioning": [],
-        "unusual_expiry_activity": [],
-        "research_candidates": [],
-        "route_counts": {
-            "radar_events": 0,
-            "persistent_contracts": 0,
-            "expiry_activity": 0,
-            "expiry_persistence": 0,
-            "structural_cold_start": 0,
-            "multiple_routes": 0,
-        },
-        "legacy_v12_available": False,
+    payload = response.json()
+    assert payload["run_state"] == "NOT_RUN"
+    assert payload["scan"] is None
+    assert payload["legacy_phase2a"] is None
+    assert payload["specification_version"] == "phase2a_vnext_stage4b"
+    assert payload["architecture"] == {
+        "active_discovery": ["RADAR_EVENT", "EXPIRY_ACTIVITY", "CONTRACT_PERSISTENCE"],
+        "removed_active_discovery": [
+            "EXPIRY_PERSISTENCE",
+            "STRUCTURAL_COLD_START",
+            "EVIDENCE_BREADTH",
+        ],
+        "candidate_entity": "TICKER_PRODUCT_PROJECTION",
+        "anomaly_entity": "CONTRACT_OR_EXPIRY",
+        "persisted_product_candidate_created": False,
     }
+    assert payload["research_candidates"] == []
+    assert payload["anomaly_pool"] == []
+    assert payload["route_counts"] == {
+        "radar_events": 0,
+        "expiry_activity": 0,
+        "contract_persistence_current_triggers": 0,
+        "contract_persistence_analytics": 0,
+        "product_candidates": 0,
+    }
+    assert payload["persistence_current_trigger_freshness"]["mode"] == (
+        "CALIBRATION_REQUIRED"
+    )
+
+
+def test_scan_run_state_distinguishes_success_failure_running_and_not_run() -> None:
+    assert _run_state(None, candidate_count=0) == "NOT_RUN"
+    assert _run_state(SimpleNamespace(status="RUNNING"), candidate_count=0) == "RUNNING"
+    assert _run_state(SimpleNamespace(status="FAILED"), candidate_count=0) == "FAILED"
+    assert _run_state(SimpleNamespace(status="PARTIAL"), candidate_count=1) == "FAILED"
+    assert (
+        _run_state(SimpleNamespace(status="COMPLETE"), candidate_count=0)
+        == "SUCCESS_NO_CANDIDATE"
+    )
+    assert (
+        _run_state(SimpleNamespace(status="COMPLETE"), candidate_count=1)
+        == "SUCCESS_WITH_CANDIDATES"
+    )
 
 
 def test_latest_scan_numeric_summary_ignores_unavailable_values() -> None:

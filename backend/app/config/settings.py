@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     radar_min_abs_oi_diff: int = Field(default=2500, ge=0)
     radar_calibration_review_sessions: int = Field(default=20, ge=1)
 
+    # Phase 2A vNext Contract Persistence may become a current trigger only under an
+    # explicitly configured and versioned recency policy.  None is intentional: no
+    # founder-approved numeric window exists yet, so the runtime remains in the safe
+    # CALIBRATION_REQUIRED mode while still computing descriptive persistence analytics.
+    phase2a_persistence_freshness_config_version: str = "2026-08-18.calibration-required.v1"
+    phase2a_persistence_current_trigger_max_vendor_age_days: int | None = Field(
+        default=None, ge=0
+    )
+
     # Phase 2B evidence freshness and descriptive tolerances are versioned process
     # configuration. Evaluations persist both this version and its effective snapshot.
     phase2b_context_config_version: str = "2026-08-14.v1.2"

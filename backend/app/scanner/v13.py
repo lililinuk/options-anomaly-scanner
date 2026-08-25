@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import desc, func, select
 
 from app.config import get_settings
+from app.core.time import is_xnys_session
 from app.db.models import (
     ContractScanObservation,
     ExpiryObservation,
@@ -19,8 +20,14 @@ from app.db.models import (
     StrikeCluster,
     TickerScanResult,
 )
-from app.scanner.config import LIMITS, UNIVERSE
+from app.scanner.config import LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE
 from app.scanner.v12 import Mag7Scanner as V12Mag7Scanner
+from app.scanner.vnext import (
+    analysis_date_exclusive_utc_cutoff,
+    persistence_freshness_policy,
+    persistence_window_last_observation_date,
+    select_current_persistence_observations,
+)
 
 
 @dataclass(frozen=True)
@@ -123,7 +130,11 @@ def is_standard_monthly_expiry(expiration: date) -> bool:
     return expiration.day == third_friday and expiration.day <= days
 
 
-def same_day_score_basis(components: dict[str, Any] | None) -> tuple[float, float, str]:
+def same_day_score_basis(
+    components: dict[str, Any] | None, *, dte: int | None = None
+) -> tuple[float | None, float | None, str]:
+    if dte == 0:
+        return None, None, "ZERO_DTE_HISTORICAL_CALIBRATION"
     values = components or {}
     volume_share_points = float(values.get("expiry_volume_share") or 0)
     neighbor_points = float(values.get("comparable_expiry_volume_neighbor_ratio") or 0)
@@ -139,12 +150,13 @@ def same_day_score_basis(components: dict[str, Any] | None) -> tuple[float, floa
 def ordered_trigger_sources(sources: Iterable[str]) -> list[str]:
     priority = {
         "RADAR_EVENT": 0,
-        "CONTRACT_PERSISTENCE": 1,
-        "EXPIRY_PERSISTENCE": 2,
-        "EXPIRY_ACTIVITY": 3,
-        "STRUCTURAL_COLD_START": 4,
+        "EXPIRY_ACTIVITY": 1,
+        "CONTRACT_PERSISTENCE": 2,
     }
-    return sorted(set(sources), key=lambda value: (priority.get(value, 99), value))
+    return sorted(
+        {source for source in sources if source in priority},
+        key=lambda value: priority[value],
+    )
 
 
 def resolve_route_state(
@@ -160,16 +172,12 @@ def resolve_route_state(
         sources.append("RADAR_EVENT")
     if contract_persistence:
         sources.append("CONTRACT_PERSISTENCE")
-    if expiry_persistence:
-        sources.append("EXPIRY_PERSISTENCE")
     if expiry_activity:
         sources.append("EXPIRY_ACTIVITY")
-    if structural_cold_start:
-        sources.append("STRUCTURAL_COLD_START")
     ordered = tuple(ordered_trigger_sources(sources))
     return RouteState(
         radar_route_eligible=radar_event,
-        persistent_route_eligible=contract_persistence or expiry_persistence,
+        persistent_route_eligible=contract_persistence,
         expiry_activity_route_eligible=expiry_activity,
         trigger_sources=ordered,
         deep_dive_eligible=bool(ordered),
@@ -192,9 +200,13 @@ def _configuration_hash(values: dict[str, Any]) -> str:
 
 
 class Mag7Scanner(V12Mag7Scanner):
-    """Phase 2A v1.3 route-based scanner using daily Radar evidence."""
+    """Phase 2A vNext scanner over the accepted Stage 3 persistence structures."""
 
     def _preflight_v11(self, market_day: date) -> None:
+        if not is_xnys_session(market_day):
+            raise RuntimeError(
+                f"Current-candidate analysis requires an XNYS trading session: {market_day}"
+            )
         super()._preflight_v11(market_day)
         profile = active_radar_threshold_profile()
         self.run.radar_threshold_profile_id = profile.profile_id
@@ -208,39 +220,59 @@ class Mag7Scanner(V12Mag7Scanner):
         tickers, expiries = await super()._activity_surface(market_day)
         for row in expiries:
             same_day = _number(row.same_day_activity_score)
-            persistent = _number(row.persistent_positioning_score)
             activity_eligible = bool(
                 same_day is not None and same_day >= LIMITS.same_day_eligibility_score
             )
-            persistent_eligible = bool(
-                persistent is not None and persistent >= LIMITS.persistent_eligibility_score
-            )
-            sources: list[str] = []
-            if persistent_eligible:
-                sources.append("EXPIRY_PERSISTENCE")
-            if activity_eligible:
-                sources.append("EXPIRY_ACTIVITY")
-            if row.structural_cold_start_eligible:
-                sources.append("STRUCTURAL_COLD_START")
+            sources = ["EXPIRY_ACTIVITY"] if activity_eligible else []
             volume_points, neighbor_points, basis = same_day_score_basis(
-                (row.components or {}).get("same_day")
+                (row.components or {}).get("same_day"), dte=row.dte_at_detection
             )
-            row.persistent_route_eligible = persistent_eligible
+            row.persistent_route_eligible = False
             row.expiry_activity_route_eligible = activity_eligible
             row.trigger_sources = ordered_trigger_sources(sources)
             row.deep_dive_eligible = bool(sources)
+            row.structural_cold_start_eligible = False
+            row.classification = "DISCOVERY_ELIGIBLE" if activity_eligible else "OBSERVE"
+            # Preserve the accepted columns for historical reads, but do not write the removed
+            # universal/breadth semantics into new vNext evidence.
+            row.discovery_score = None
+            row.discovery_source = None
+            row.discovery_primary_score = None
+            row.discovery_secondary_score = None
+            row.discovery_confirmation_bonus = None
+            row.discovery_evidence_breadth = None
             row.standard_monthly_inferred = is_standard_monthly_expiry(row.expiration)
             row.monthly_context_source = "INFERRED" if row.standard_monthly_inferred else None
-            row.volume_share_points = Decimal(str(volume_points))
-            row.neighbor_points = Decimal(str(neighbor_points))
+            row.volume_share_points = (
+                Decimal(str(volume_points)) if volume_points is not None else None
+            )
+            row.neighbor_points = (
+                Decimal(str(neighbor_points)) if neighbor_points is not None else None
+            )
             row.same_day_score_basis = basis
+            row.specification_version = SIGNAL_SPEC_VERSION
+        for ticker in tickers:
+            ticker.preliminary_score = None
+            ticker.specification_version = SIGNAL_SPEC_VERSION
         self.session.commit()
-        self._stage("S3_THREE_ROUTE_DISCOVERY", universal_score_primary=False)
+        self._stage(
+            "S3_VNEXT_ACTIVE_DISCOVERY",
+            active_families=["RADAR_EVENT", "EXPIRY_ACTIVITY", "CONTRACT_PERSISTENCE"],
+            removed_active_families=[
+                "EXPIRY_PERSISTENCE",
+                "STRUCTURAL_COLD_START",
+                "EVIDENCE_BREADTH",
+            ],
+            universal_score=False,
+        )
         return tickers, expiries
 
     def _select_dual(
         self, tickers: list[TickerScanResult], expiries: list[ExpiryObservation]
     ) -> list[ExpiryObservation]:
+        assert self.run and self.run.market_date
+        policy = persistence_freshness_policy()
+        analysis_date = self.run.market_date
         by_key = {(row.ticker, row.expiration): row for row in expiries}
         latest_radar_dates = {
             ticker: self.session.scalar(
@@ -286,17 +318,20 @@ class Mag7Scanner(V12Mag7Scanner):
                 select(ContractScanObservation)
                 .where(
                     ContractScanObservation.persistent_positioning_score
-                    >= LIMITS.persistent_eligibility_score
+                    >= LIMITS.persistent_eligibility_score,
+                    ContractScanObservation.observed_at
+                    < analysis_date_exclusive_utc_cutoff(analysis_date),
                 )
                 .order_by(desc(ContractScanObservation.observed_at))
             )
         )
-        seen_contracts: set[str] = set()
         contract_persistence: dict[tuple[str, date], float] = {}
-        for contract in latest_contracts:
-            if contract.contract_symbol in seen_contracts:
-                continue
-            seen_contracts.add(contract.contract_symbol)
+        current_persistence = select_current_persistence_observations(
+            latest_contracts,
+            policy=policy,
+            analysis_date=analysis_date,
+        )
+        for contract in current_persistence:
             key = (contract.ticker, contract.expiration)
             expiry = by_key.get(key)
             if expiry is None:
@@ -320,18 +355,18 @@ class Mag7Scanner(V12Mag7Scanner):
                 0
                 if "RADAR_EVENT" in sources
                 else 1
-                if sources & {"CONTRACT_PERSISTENCE", "EXPIRY_PERSISTENCE"}
-                else 2
                 if "EXPIRY_ACTIVITY" in sources
+                else 2
+                if "CONTRACT_PERSISTENCE" in sources
                 else 3
             )
             key = (row.ticker, row.expiration)
             route_value = (
                 radar_premium.get(key, 0)
                 if route_rank == 0
-                else contract_persistence.get(key, _number(row.persistent_positioning_score) or 0)
-                if route_rank == 1
                 else _number(row.same_day_activity_score) or 0
+                if route_rank == 1
+                else contract_persistence.get(key, 0)
             )
             return route_rank, -route_value, row.ticker, row.expiration
 
@@ -354,10 +389,20 @@ class Mag7Scanner(V12Mag7Scanner):
         for ticker in tickers:
             ticker.selected_for_deep_scan = ticker.ticker in selected_tickers
         self.session.commit()
+        selected_ids = {row.id for row in selected}
+        truncated = [
+            {"ticker": row.ticker, "expiration": row.expiration.isoformat()}
+            for row in ordered
+            if row.id not in selected_ids
+        ]
         self._stage(
-            "S4_ROUTE_SELECTION",
-            route_priority=["RADAR_EVENT", "PERSISTENT_POSITIONING", "EXPIRY_ACTIVITY"],
+            "S4_VNEXT_DEEP_BUDGET_SELECTION",
+            route_priority=["RADAR_EVENT", "EXPIRY_ACTIVITY", "CONTRACT_PERSISTENCE"],
             selected_expiries=len(selected),
+            eligible_expiries=len(ordered),
+            operational_truncation=bool(truncated),
+            truncated_expiries=truncated,
+            candidate_identity_affected=False,
             deduplicated_chain_loads=len({(row.ticker, row.expiration) for row in selected}),
         )
         return selected
@@ -411,21 +456,48 @@ class Mag7Scanner(V12Mag7Scanner):
     async def _structure_scan(
         self, selected: list[ExpiryObservation], market_day: date
     ) -> tuple[list[ContractScanObservation], list[StrikeCluster], int]:
+        partial_before_deep_dive = self.partial
         contracts, clusters, radar_matches = await super()._structure_scan(selected, market_day)
+        # Structure is optional post-candidate context in vNext.  The inherited scanner marks a
+        # missing complete chain archive as run-level PARTIAL; keep the missing structure rows
+        # absent, but do not let that Deep-Dive-only condition suppress candidate materialization.
+        # A legitimate partial condition established before Deep Dive remains authoritative.
+        self.partial = partial_before_deep_dive
+        policy = persistence_freshness_policy()
         expiry_by_id = {row.id: row for row in selected}
         for contract in contracts:
             persistent = _number(contract.persistent_positioning_score)
-            if persistent is not None and persistent >= LIMITS.persistent_eligibility_score:
+            last_observation_date = persistence_window_last_observation_date(contract)
+            freshness = policy.assess(
+                window_last_observation_date=last_observation_date,
+                analysis_date=market_day,
+            )
+            persistent_components = dict(contract.persistent_components or {})
+            persistent_components["current_trigger_freshness"] = {
+                **policy.snapshot(),
+                "state": freshness.state,
+                "eligible": freshness.eligible,
+                "observation_age_days": freshness.observation_age_days,
+            }
+            contract.persistent_components = persistent_components
+            persistence_current = bool(
+                persistent is not None
+                and persistent >= LIMITS.persistent_eligibility_score
+                and freshness.eligible
+            )
+            contract.persistent_route_eligible = persistence_current
+            if persistence_current:
                 contract.persistent_route_eligible = True
-                contract.deep_dive_eligible = True
                 contract.trigger_sources = ordered_trigger_sources(
                     [*(contract.trigger_sources or []), "CONTRACT_PERSISTENCE"]
                 )
             expiry = expiry_by_id.get(contract.expiry_observation_id)
             if expiry:
+                contract.deep_dive_eligible = expiry.deep_dive_eligible
                 contract.trigger_sources = ordered_trigger_sources(
                     [*(contract.trigger_sources or []), *(expiry.trigger_sources or [])]
                 )
+            contract.specification_version = SIGNAL_SPEC_VERSION
         self.session.commit()
         return contracts, clusters, radar_matches
 

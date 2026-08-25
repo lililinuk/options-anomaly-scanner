@@ -24,7 +24,7 @@ from app.db.models import (
     StrikeCluster,
     TickerScanResult,
 )
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.models.signals import DteBucket, bucket_for_dte, calendar_dte
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
@@ -34,7 +34,6 @@ from app.scanner.clusters import ClusterContract, build_clusters
 from app.scanner.config import LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE, configuration_snapshot
 from app.scanner.parsers import (
     ChainContract,
-    first_meta,
     intraday_metrics,
     object_rows,
     parse_chain,
@@ -918,7 +917,7 @@ class Mag7Scanner:
             payload=result.payload,
             ticker=ticker,
             expiration=expiration,
-            observed_at=_payload_time(result.payload),
+            vendor_observed_at=parse_vendor_observed_at(result.payload),
             scan_run_id=self.run.id,
         )
         self.session.commit()
@@ -976,16 +975,6 @@ def _dec(value: float | int | Decimal | None) -> Decimal | None:
     return Decimal(str(round(float(value), 8))) if value is not None else None
 
 
-def _payload_time(payload: Any) -> Any:
-    raw = first_meta(payload, "as_of", "generated_at", "observed_at", "data_as_of")
-    if isinstance(raw, str):
-        try:
-            from datetime import datetime
-
-            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            pass
-    return utc_now()
 
 
 def completion_status(*, partial: bool, budget_limited: bool, data_pending: bool) -> str:

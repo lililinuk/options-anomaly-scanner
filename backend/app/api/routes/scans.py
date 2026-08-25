@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -16,12 +17,40 @@ from app.db.models import (
     OiChangeRadarObservation,
     ScanRun,
     StrikeCluster,
+    ZeroDteActivitySessionSnapshot,
 )
 from app.db.session import get_db_session
 from app.nightwatch.client import NightwatchClient
-from app.scanner.config import LIMITS, UNIVERSE
+from app.scanner.candidate_persistence import (
+    load_product_candidates_for_scan,
+    product_candidate_public,
+)
+from app.scanner.candidate_projection import (
+    contract_deep_dive as _shared_contract_deep_dive,
+)
+from app.scanner.candidate_projection import (
+    expiry_deep_dive as _shared_expiry_deep_dive,
+)
+from app.scanner.candidate_projection import (
+    load_stage4_candidate_projection,
+)
+from app.scanner.candidate_projection import (
+    persistence_evidence_for_projection as _shared_persistence_evidence,
+)
+from app.scanner.candidate_projection import (
+    persistent_public as _shared_persistent_public,
+)
+from app.scanner.candidate_projection import (
+    vnext_anomaly_pool as _shared_vnext_anomaly_pool,
+)
+from app.scanner.config import LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE
 from app.scanner.service import ConcurrentScanError, ScanSummary
 from app.scanner.v13 import Mag7Scanner, active_radar_threshold_profile
+from app.scanner.vnext import (
+    ACTIVE_DISCOVERY_FAMILIES,
+    REMOVED_ACTIVE_DISCOVERY_FAMILIES,
+    persistence_freshness_policy,
+)
 
 router = APIRouter()
 database_session = Depends(get_db_session)
@@ -46,6 +75,20 @@ def _response(summary: ScanSummary) -> ScanSummaryResponse:
     return ScanSummaryResponse(**{**summary.__dict__, "scan_run_id": str(summary.scan_run_id)})
 
 
+def _run_state(run: ScanRun | None, *, candidate_count: int) -> str:
+    """Map persisted scan truth to the Stage 2 run-level availability contract."""
+
+    if run is None:
+        return "NOT_RUN"
+    if run.status == "RUNNING":
+        return "RUNNING"
+    if run.status != "COMPLETE":
+        # PARTIAL, DATA_PENDING, and budget-limited runs must not claim a successful
+        # no-candidate outcome. The original backend status remains available in scan.status.
+        return "FAILED"
+    return "SUCCESS_WITH_CANDIDATES" if candidate_count else "SUCCESS_NO_CANDIDATE"
+
+
 @router.post("/mag7", response_model=ScanSummaryResponse)
 async def run_mag7_scan(session: Session = database_session) -> ScanSummaryResponse:
     settings = get_settings()
@@ -66,27 +109,31 @@ async def run_mag7_scan(session: Session = database_session) -> ScanSummaryRespo
 def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
     run = session.scalar(
         select(ScanRun)
-        .where(ScanRun.specification_version == "signal_spec_v1.3_phase2a")
+        .where(ScanRun.specification_version == SIGNAL_SPEC_VERSION)
         .order_by(desc(ScanRun.started_at))
         .limit(1)
     )
     if run is None:
-        # Preserve access to accepted v1.2 history until the first v1.3 interactive run. Daily
-        # Radar evidence is still returned independently below.
+        # Accepted historical rows remain readable, but the API labels them explicitly and
+        # never uses their legacy universal score/breadth fields for the vNext projection.
         run = session.scalar(
             select(ScanRun)
-            .where(ScanRun.specification_version == "signal_spec_v1.2_phase2a")
+            .where(
+                ScanRun.specification_version.in_(
+                    ("signal_spec_v1.3_phase2a", "signal_spec_v1.2_phase2a")
+                )
+            )
             .order_by(desc(ScanRun.started_at))
             .limit(1)
         )
     if run is None:
         empty = {
+            "run_state": "NOT_RUN",
             "scan": None,
-            "results": [],
-            "distribution": _distribution([]),
-            "top_expiries": [],
+            "product_candidates_state": "NOT_YET_AVAILABLE",
+            "product_candidates": [],
             "zero_dte_status": [],
-            "structural_cold_start": [],
+            "legacy_phase2a": None,
         }
         empty.update(_v13_sections(session, None, [], []))
         return empty
@@ -99,7 +146,7 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
     winners = {
         ticker: max(
             (row for row in normal_eligible if row.ticker == ticker),
-            key=lambda row: float(row.discovery_score),
+            key=lambda row: float(row.same_day_activity_score or 0),
             default=None,
         )
         for ticker in UNIVERSE
@@ -145,12 +192,12 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
             row for row in clusters if expiry and row.expiry_observation_id == expiry.id
         ]
         call_cluster = max(
-            (row for row in expiry_clusters if row.right == "C"),
+            (row for row in expiry_clusters if row.right == "C" and _valid_cluster(row)),
             key=lambda row: float(row.cluster_score),
             default=None,
         )
         put_cluster = max(
-            (row for row in expiry_clusters if row.right == "P"),
+            (row for row in expiry_clusters if row.right == "P" and _valid_cluster(row)),
             key=lambda row: float(row.cluster_score),
             default=None,
         )
@@ -166,18 +213,18 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
                 "persistent_positioning_score": _float(
                     expiry.persistent_positioning_score if expiry else None
                 ),
-                "discovery_score": _float(expiry.discovery_score if expiry else None),
-                "discovery_source": expiry.discovery_source if expiry else None,
-                "discovery_evidence_breadth": expiry.discovery_evidence_breadth
+                "legacy_discovery_score": _float(expiry.discovery_score if expiry else None),
+                "legacy_discovery_source": expiry.discovery_source if expiry else None,
+                "legacy_discovery_evidence_breadth": expiry.discovery_evidence_breadth
                 if expiry
-                else 0,
-                "discovery_primary_score": _float(
+                else None,
+                "legacy_discovery_primary_score": _float(
                     expiry.discovery_primary_score if expiry else None
                 ),
-                "discovery_secondary_score": _float(
+                "legacy_discovery_secondary_score": _float(
                     expiry.discovery_secondary_score if expiry else None
                 ),
-                "discovery_confirmation_bonus": _float(
+                "legacy_discovery_confirmation_bonus": _float(
                     expiry.discovery_confirmation_bonus if expiry else None
                 ),
                 "oi_share": _float(expiry.oi_share if expiry else None),
@@ -212,9 +259,22 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
             }
         )
     top_expiries = sorted(
-        normal_eligible, key=lambda row: float(row.discovery_score), reverse=True
+        normal_eligible, key=lambda row: float(row.same_day_activity_score or 0), reverse=True
     )[:15]
     zero_dte = [row for row in expiries if row.dte_at_detection == 0]
+    zero_dte_snapshot_kind = {
+        row.ticker: row.snapshot_kind
+        for row in (
+            session.scalars(
+                select(ZeroDteActivitySessionSnapshot).where(
+                    ZeroDteActivitySessionSnapshot.scan_run_id == run.id
+                )
+            )
+            if zero_dte
+            else []
+        )
+    }
+    persisted_candidates = load_product_candidates_for_scan(session, run.id)
     cold_only = [
         row
         for row in expiries
@@ -237,13 +297,38 @@ def latest_mag7_scan(session: Session = database_session) -> dict[str, Any]:
             else None,
             "archive_completed_at": archive.completed_at if archive else None,
         },
-        "results": results,
-        "distribution": _distribution(expiries),
-        "top_expiries": [_expiry_public(row) for row in top_expiries],
-        "zero_dte_status": [_zero_dte_public(row) for row in zero_dte],
-        "structural_cold_start": [_expiry_public(row) for row in cold_only],
+        "product_candidates_state": (
+            "AVAILABLE"
+            if run.candidate_materialized_at is not None
+            else "NOT_YET_AVAILABLE"
+        ),
+        "product_candidates": [
+            product_candidate_public(candidate) for candidate in persisted_candidates
+        ],
+        "zero_dte_status": [
+            _zero_dte_public(
+                row,
+                current_snapshot_kind=zero_dte_snapshot_kind.get(
+                    row.ticker,
+                    "LEGACY_OR_AMBIGUOUS",
+                ),
+            )
+            for row in zero_dte
+        ],
+        "legacy_phase2a": {
+            "source_specification_version": run.specification_version,
+            "not_used_for_vnext_candidate_qualification": True,
+            "results": results,
+            "distribution": _distribution(expiries),
+            "top_expiries": [_expiry_public(row) for row in top_expiries],
+            "structural_cold_start_history": [_expiry_public(row) for row in cold_only],
+        },
     }
     payload.update(_v13_sections(session, run, expiries, contracts))
+    payload["run_state"] = _run_state(
+        run,
+        candidate_count=len(payload["research_candidates"]),
+    )
     return payload
 
 
@@ -266,43 +351,32 @@ def _v13_sections(
     contracts: list[ContractScanObservation],
 ) -> dict[str, Any]:
     profile = active_radar_threshold_profile()
-    radar_rows: list[OiChangeRadarObservation] = []
-    for ticker in UNIVERSE:
-        latest = session.scalar(
-            select(func.max(OiChangeRadarObservation.observation_date)).where(
-                OiChangeRadarObservation.ticker == ticker,
-                OiChangeRadarObservation.material_event_eligible.is_(True),
-            )
-        )
-        if latest:
-            radar_rows.extend(
-                session.scalars(
-                    select(OiChangeRadarObservation).where(
-                        OiChangeRadarObservation.ticker == ticker,
-                        OiChangeRadarObservation.observation_date == latest,
-                        OiChangeRadarObservation.material_event_eligible.is_(True),
-                    )
-                )
-            )
-    radar_rows.sort(
-        key=lambda row: (_float(row.premium) or 0, abs(row.delta_oi or 0)), reverse=True
+    projection = load_stage4_candidate_projection(
+        session,
+        run,
+        expiries,
+        contracts,
+        policy=persistence_freshness_policy(),
+        knowledge_cutoff=getattr(run, "candidate_materialized_at", None),
     )
+    analysis_date = run.market_date if run is not None else None
+    radar_rows = projection.radar_rows
     material_events = [_radar_public(row) for row in radar_rows]
-
-    persistent_contracts = [
-        row
-        for row in contracts
-        if row.persistent_positioning_score is not None
-        and float(row.persistent_positioning_score) >= LIMITS.persistent_eligibility_score
-    ]
-    persistent_contracts.sort(
-        key=lambda row: float(row.persistent_positioning_score or 0), reverse=True
-    )
-    activity = [row for row in expiries if row.expiry_activity_route_eligible]
-    activity.sort(key=lambda row: float(row.same_day_activity_score or 0), reverse=True)
-    deep_dive = _deep_dive_public(radar_rows, persistent_contracts, expiries)
+    persistent_contracts = projection.persistence_rows
+    activity = projection.activity_rows
+    anomaly_pool = projection.anomaly_pool
+    product_candidates = projection.product_candidates
     return {
-        "specification_version": "signal_spec_v1.3_phase2a",
+        "specification_version": SIGNAL_SPEC_VERSION,
+        "architecture": {
+            "active_discovery": list(ACTIVE_DISCOVERY_FAMILIES),
+            "removed_active_discovery": list(REMOVED_ACTIVE_DISCOVERY_FAMILIES),
+            "candidate_entity": "TICKER_PRODUCT_PROJECTION",
+            "anomaly_entity": "CONTRACT_OR_EXPIRY",
+            "persisted_product_candidate_created": bool(
+                getattr(run, "candidate_materialized_at", None) is not None
+            ),
+        },
         "threshold_profile": profile.snapshot(),
         "radar_filters": {
             "min_premium_usd": _float(profile.min_premium_usd),
@@ -310,14 +384,63 @@ def _v13_sections(
         },
         "latest_contract_events": material_events[:15],
         "all_material_contract_events": material_events,
-        "persistent_positioning": [_persistent_public(row) for row in persistent_contracts],
+        "persistent_positioning": [
+            _persistent_public(row, analysis_date=analysis_date) for row in persistent_contracts
+        ],
         "unusual_expiry_activity": [_activity_public(row) for row in activity],
-        "research_candidates": deep_dive,
-        "route_counts": _route_counts(radar_rows, persistent_contracts, expiries),
-        "legacy_v12_available": bool(
-            run and run.specification_version == "signal_spec_v1.2_phase2a"
+        "anomaly_pool": anomaly_pool,
+        "research_candidates": product_candidates,
+        "route_counts": _route_counts(
+            anomaly_pool,
+            product_candidates,
+            projection.persistence_analytics,
         ),
+        "persistence_current_trigger_freshness": persistence_freshness_policy().snapshot(),
     }
+
+
+def _persistence_evidence_for_projection(
+    session: Session,
+    *,
+    analysis_date: date | None,
+    current_run_analytics: list[ContractScanObservation],
+) -> list[ContractScanObservation]:
+    return _shared_persistence_evidence(
+        session,
+        analysis_date=analysis_date,
+        current_run_analytics=current_run_analytics,
+        policy=persistence_freshness_policy(),
+    )
+
+
+def _vnext_anomaly_pool(
+    radar: list[OiChangeRadarObservation],
+    persistent: list[ContractScanObservation],
+    activity: list[ExpiryObservation],
+    *,
+    contracts: list[ContractScanObservation],
+    clusters: list[StrikeCluster],
+    analysis_date: date | None,
+) -> list[dict[str, Any]]:
+    return _shared_vnext_anomaly_pool(
+        radar,
+        persistent,
+        activity,
+        contracts=contracts,
+        clusters=clusters,
+        analysis_date=analysis_date,
+        policy=persistence_freshness_policy(),
+    )
+
+
+def _contract_deep_dive(row: ContractScanObservation | None) -> dict[str, Any]:
+    return _shared_contract_deep_dive(row)
+
+
+def _expiry_deep_dive(
+    contracts: list[ContractScanObservation], clusters: list[StrikeCluster]
+) -> dict[str, Any]:
+    return _shared_expiry_deep_dive(contracts, clusters)
 
 
 def _radar_public(row: OiChangeRadarObservation) -> dict[str, Any]:
@@ -362,31 +485,19 @@ def _radar_public(row: OiChangeRadarObservation) -> dict[str, Any]:
     }
 
 
-def _persistent_public(row: ContractScanObservation) -> dict[str, Any]:
-    windows = (row.persistent_components or {}).get("windows", {})
-    return {
-        "ticker": row.ticker,
-        "contract_symbol": row.contract_symbol,
-        "expiration": row.expiration.isoformat(),
-        "dte": row.dte_at_detection,
-        "right": row.right,
-        "strike": _float(row.strike),
-        "oi_change_3": windows.get("3", {}).get("net_oi_change"),
-        "oi_change_5": windows.get("5", {}).get("net_oi_change"),
-        "oi_change_10": windows.get("10", {}).get("net_oi_change"),
-        "oi_growth": windows.get(str(row.persistent_winning_window), {}).get("oi_growth")
-        if row.persistent_winning_window
-        else None,
-        "persistent_state": row.persistent_state,
-        "persistent_score": _float(row.persistent_positioning_score),
-        "winning_window": row.persistent_winning_window,
-        "history_confidence": row.history_confidence,
-        "history_observation_count": row.history_observation_count,
-        "history_required": 3,
-    }
+def _persistent_public(
+    row: ContractScanObservation, *, analysis_date: date | None
+) -> dict[str, Any]:
+    return _shared_persistent_public(
+        row,
+        analysis_date=analysis_date,
+        policy=persistence_freshness_policy(),
+    )
 
 
 def _activity_public(row: ExpiryObservation) -> dict[str, Any]:
+    components = row.components or {}
+    dte_identity = components.get("dte_identity", {})
     return {
         "ticker": row.ticker,
         "expiry": row.expiration.isoformat(),
@@ -394,9 +505,19 @@ def _activity_public(row: ExpiryObservation) -> dict[str, Any]:
         "same_day_activity_score": _float(row.same_day_activity_score),
         "volume_share": _float(row.volume_share),
         "volume_share_points": _float(row.volume_share_points),
-        "neighbor_ratio": _float(row.neighbor_ratio),
+        "comparable_neighbor_ratio": _float(row.neighbor_ratio),
+        "comparable_peer_count": row.comparable_peer_count,
+        "comparable_peer_dtes": row.comparable_peer_dtes,
+        "comparable_peer_quality": row.comparable_peer_quality,
+        "comparable_peer_median_volume": _float(row.comparable_peer_median_volume),
+        "raw_cross_expiry_neighbor_ratio_descriptive_only": components.get(
+            "raw_cross_expiry_neighbor_ratio_descriptive_only"
+        ),
         "neighbor_points": _float(row.neighbor_points),
         "score_basis": row.same_day_score_basis,
+        "score_components": components.get("same_day", {}),
+        "dte_anchor_date": dte_identity.get("anchor_date"),
+        "dte_anchor_type": dte_identity.get("anchor_type"),
         "standard_monthly_inferred": row.standard_monthly_inferred,
         "monthly_context_source": row.monthly_context_source,
         "baseline_status": row.same_day_baseline_status,
@@ -477,17 +598,24 @@ def _deep_dive_public(
 
 
 def _route_counts(
-    radar: list[OiChangeRadarObservation],
-    persistent: list[ContractScanObservation],
-    expiries: list[ExpiryObservation],
+    anomaly_pool: list[dict[str, Any]],
+    product_candidates: list[dict[str, Any]],
+    persistent_analytics: list[ContractScanObservation],
 ) -> dict[str, int]:
     return {
-        "radar_events": len(radar),
-        "persistent_contracts": len(persistent),
-        "expiry_activity": sum(row.expiry_activity_route_eligible for row in expiries),
-        "expiry_persistence": sum(row.persistent_route_eligible for row in expiries),
-        "structural_cold_start": sum(row.structural_cold_start_eligible for row in expiries),
-        "multiple_routes": sum(len(set(row.trigger_sources or [])) > 1 for row in expiries),
+        "radar_events": sum(
+            row["evidence_family"] == "RADAR_EVENT" for row in anomaly_pool
+        ),
+        "expiry_activity": sum(
+            row["evidence_family"] == "EXPIRY_ACTIVITY" for row in anomaly_pool
+        ),
+        "contract_persistence_current_triggers": sum(
+            row["evidence_family"] == "CONTRACT_PERSISTENCE"
+            and row["qualifies_current_candidate"] is True
+            for row in anomaly_pool
+        ),
+        "contract_persistence_analytics": len(persistent_analytics),
+        "product_candidates": len(product_candidates),
     }
 
 
@@ -509,6 +637,8 @@ def _radar_status(ticker: str, tested: set[str], matched: set[str]) -> str:
 
 
 def _normal_eligible(row: ExpiryObservation) -> bool:
+    """Legacy v1.2/v1.3 expiry summary eligibility; never used by vNext projection."""
+
     if row.dte_at_detection > 90 or row.discovery_score is None:
         return False
     same_day = _float(row.same_day_activity_score)
@@ -553,25 +683,36 @@ def _expiry_public(row: ExpiryObservation) -> dict[str, Any]:
         "dte": row.dte_at_detection,
         "bucket": row.bucket_at_detection,
         "same_day_activity_score": _float(row.same_day_activity_score),
-        "persistent_positioning_score": _float(row.persistent_positioning_score),
-        "discovery_score": _float(row.discovery_score),
-        "discovery_source": row.discovery_source,
-        "discovery_evidence_breadth": row.discovery_evidence_breadth,
+        "score_basis": row.same_day_score_basis,
         "current_volume_share": _float(row.volume_share),
+        "comparable_neighbor_ratio": _float(row.neighbor_ratio),
         "peer_count": row.comparable_peer_count,
         "peer_dtes": row.comparable_peer_dtes,
         "peer_quality": row.comparable_peer_quality,
     }
 
 
-def _zero_dte_public(row: ExpiryObservation) -> dict[str, Any]:
+def _zero_dte_public(
+    row: ExpiryObservation,
+    *,
+    current_snapshot_kind: str = "LEGACY_OR_AMBIGUOUS",
+) -> dict[str, Any]:
+    observation_count = row.baseline_observation_count or 0
     return {
         **_expiry_public(row),
         "current_expiry_volume": row.current_expiry_volume,
-        "raw_neighbor_ratio_descriptive_only": _float(row.neighbor_ratio),
+        "raw_neighbor_ratio_descriptive_only": (row.components or {}).get(
+            "raw_cross_expiry_neighbor_ratio_descriptive_only"
+        ),
         "baseline_status": row.same_day_baseline_status,
         "baseline_observation_count": row.baseline_observation_count,
         "baseline_required": LIMITS.zero_dte_baseline_observations,
+        "current_snapshot_kind": current_snapshot_kind,
+        "canonical_history_maturity": (
+            "AVAILABLE"
+            if observation_count >= LIMITS.zero_dte_baseline_observations
+            else "HISTORY_IMMATURE"
+        ),
         "baseline_mean": _float(row.baseline_20_mean_volume_share),
         "baseline_median": _float(row.baseline_20_median_volume_share),
         "baseline_mad": _float(row.baseline_20_mad_volume_share),
@@ -584,11 +725,13 @@ def _zero_dte_public(row: ExpiryObservation) -> dict[str, Any]:
 def _positioning_label(
     call_cluster: StrikeCluster | None, put_cluster: StrikeCluster | None
 ) -> str:
-    if call_cluster and put_cluster:
+    valid_call = _valid_cluster(call_cluster)
+    valid_put = _valid_cluster(put_cluster)
+    if valid_call and valid_put:
         return "TWO_SIDED"
-    if call_cluster:
+    if valid_call:
         return "CALL_STRUCTURE"
-    if put_cluster:
+    if valid_put:
         return "PUT_STRUCTURE"
     return "NO_STRONG_STRUCTURE"
 
@@ -606,4 +749,10 @@ def _winning_share_change(expiry: ExpiryObservation | None) -> float | None:
 
 
 def _cluster_label(cluster: StrikeCluster | None) -> str | None:
-    return f"{cluster.min_strike:g}–{cluster.max_strike:g}" if cluster else None
+    return f"{cluster.min_strike:g}–{cluster.max_strike:g}" if _valid_cluster(cluster) else None
+
+
+def _valid_cluster(cluster: StrikeCluster | None) -> bool:
+    return bool(
+        cluster and cluster.classification in {"VALID_CLUSTER", "STRONG_CLUSTER"}
+    )

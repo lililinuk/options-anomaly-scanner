@@ -20,7 +20,7 @@ from app.dealer_archive.config import (
 )
 from app.dealer_archive.domain import normalize_dealer_gex_surface, unavailable_surface
 from app.dealer_archive.repository import persist_surface, reusable_completed_archive_run
-from app.ingestion.raw import RawIngestor
+from app.ingestion.raw import RawIngestor, parse_vendor_observed_at
 from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
 from app.nightwatch.models import ApiUsageEvent
@@ -271,7 +271,7 @@ class DealerGexArchiver:
                     vendor_request_id=result.vendor_request_id,
                     payload=result.payload,
                     ticker=ticker,
-                    observed_at=None,
+                    vendor_observed_at=parse_vendor_observed_at(result.payload),
                     scan_run_id=None,
                 )
             surface = normalize_dealer_gex_surface(

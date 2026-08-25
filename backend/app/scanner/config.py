@@ -3,7 +3,9 @@ from typing import Final
 
 from app.models.signals import DEFAULT_DTE_BUCKET_RULES
 
-SIGNAL_SPEC_VERSION: Final = "signal_spec_v1.3_phase2a"
+# The founder intentionally deferred a numeric production spec assignment.  This working
+# architecture identity keeps new Stage 4B evidence distinguishable from accepted v1.3 history.
+SIGNAL_SPEC_VERSION: Final = "phase2a_vnext_stage4b"
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,7 @@ def configuration_snapshot() -> dict[str, object]:
     # Imported lazily to keep configuration dataclasses free from Settings initialization side
     # effects during module import and migration discovery.
     from app.scanner.v13 import active_radar_threshold_profile
+    from app.scanner.vnext import persistence_freshness_policy
 
     return {
         "version": SIGNAL_SPEC_VERSION,
@@ -128,6 +131,14 @@ def configuration_snapshot() -> dict[str, object]:
         "selection_and_budget": asdict(LIMITS),
         "daily_oi_archive": asdict(ARCHIVE_LIMITS),
         "radar_discovery": active_radar_threshold_profile().snapshot(),
+        "active_discovery_families": [
+            "RADAR_EVENT",
+            "EXPIRY_ACTIVITY",
+            "CONTRACT_PERSISTENCE",
+        ],
+        "candidate_entity": "TICKER_PRODUCT_PROJECTION",
+        "persistence_current_trigger": persistence_freshness_policy().snapshot(),
+        "market_calendar": "XNYS",
         "scheduling": {
             "in_process": False,
             "external_schedule_required": True,

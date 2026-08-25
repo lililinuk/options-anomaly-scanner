@@ -47,6 +47,22 @@ def _heatmap(
     }
 
 
+def test_dealer_structure_does_not_label_local_capture_as_vendor_time() -> None:
+    heatmap = {
+        **_heatmap([(220, 100), (230, 20)]),
+        "generated_at": None,
+        "capture_timestamp": "2026-08-14T00:05:00Z",
+    }
+
+    result = build_dealer_gex_structure(
+        heatmap,
+        anchor_expiration=date(2026, 8, 21),
+        spot=225,
+    )
+
+    assert result["source_timestamp"] is None
+
+
 def test_primary_floor_selects_largest_positive_below_spot_only() -> None:
     result = build_dealer_gex_structure(
         _heatmap([(210, 20), (217.5, -500), (220, 100), (230, 1_000)]),
