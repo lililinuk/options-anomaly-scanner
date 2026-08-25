@@ -344,8 +344,12 @@ class AnomalyContextDetail(Base):
     vendor_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     local_captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quote_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    contract_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    expiry_activity_recap: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    contract_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
+    expiry_activity_recap: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
     volatility_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     dealer_gex_context: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     deep_dive_references: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)

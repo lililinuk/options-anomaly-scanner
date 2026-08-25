@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import CheckConstraint, Index, UniqueConstraint
+from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 
 import app.api.routes.candidate_contexts as candidate_routes
 import app.confirmation.vnext as vnext
@@ -482,6 +483,72 @@ def test_stage6_models_and_migration_express_additive_identity() -> None:
         assert forbidden not in migration
 
 
+def _postgres_jsonb_bound_value(column_name: str, value: Any) -> Any:
+    column = AnomalyContextDetail.__table__.c[column_name]
+    processor = column.type.bind_processor(postgresql_dialect())
+    assert processor is not None
+    return processor(value)
+
+
+def _payload_check_satisfied(
+    entity_type: str,
+    contract_snapshot: Any,
+    expiry_activity_recap: Any,
+) -> bool:
+    return (
+        entity_type == "CONTRACT"
+        and contract_snapshot is not None
+        and expiry_activity_recap is None
+    ) or (
+        entity_type == "EXPIRY"
+        and contract_snapshot is None
+        and expiry_activity_recap is not None
+    )
+
+
+def test_anomaly_payload_jsonb_uses_sql_null_and_preserves_check_contract() -> None:
+    contract_column = AnomalyContextDetail.__table__.c.contract_snapshot
+    expiry_column = AnomalyContextDetail.__table__.c.expiry_activity_recap
+    assert contract_column.type.none_as_null is True
+    assert expiry_column.type.none_as_null is True
+
+    contract_object = _postgres_jsonb_bound_value(
+        "contract_snapshot", {"contract_symbol": "NVDA260821C00160000"}
+    )
+    expiry_object = _postgres_jsonb_bound_value(
+        "expiry_activity_recap", {"expiration": EXPIRY.isoformat()}
+    )
+    assert json.loads(contract_object) == {
+        "contract_symbol": "NVDA260821C00160000"
+    }
+    assert json.loads(expiry_object) == {"expiration": EXPIRY.isoformat()}
+    assert _postgres_jsonb_bound_value("contract_snapshot", None) is None
+    assert _postgres_jsonb_bound_value("expiry_activity_recap", None) is None
+
+    assert _payload_check_satisfied("CONTRACT", contract_object, None)
+    assert _payload_check_satisfied("EXPIRY", None, expiry_object)
+    assert not _payload_check_satisfied("CONTRACT", contract_object, expiry_object)
+    assert not _payload_check_satisfied("EXPIRY", contract_object, expiry_object)
+    assert not _payload_check_satisfied("CONTRACT", None, None)
+    assert not _payload_check_satisfied("EXPIRY", None, None)
+
+    constraint = next(
+        item
+        for item in AnomalyContextDetail.__table__.constraints
+        if isinstance(item, CheckConstraint)
+        and item.name is not None
+        and item.name.endswith("anomaly_context_payload_matches_entity")
+    )
+    constraint_sql = str(constraint.sqltext)
+    for clause in (
+        "contract_snapshot IS NOT NULL",
+        "expiry_activity_recap IS NULL",
+        "contract_snapshot IS NULL",
+        "expiry_activity_recap IS NOT NULL",
+    ):
+        assert clause in constraint_sql
+
+
 def test_s6_r1_baseline_raw_source_excludes_post_t0_evidence() -> None:
     service = _source_cutoff_harness()
 
@@ -792,6 +859,49 @@ def test_contract_and_expiry_details_preserve_phase2b_boundaries(
     assert expiry.expiry_activity_recap is not None
     for fabricated in ("contract_symbol", "right", "strike", "contract_iv", "delta", "bid", "ask"):
         assert fabricated not in expiry.expiry_activity_recap
+
+
+def test_stage6_detail_builder_binds_inactive_payloads_as_sql_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _session, service, candidate = _evaluation_fixture()
+    monkeypatch.setattr(
+        vnext,
+        "best_archived_surface_at_or_before",
+        lambda *_args, **_kwargs: None,
+    )
+    context = service._persist_evaluation(
+        candidate,
+        evaluation_kind=EvaluationIdentity.FIRST_KNOWLEDGE_BASELINE,
+        evaluated_at=EVALUATED,
+        evidence_cutoff_at=FIRST_KNOWN,
+        sources=_sources(),
+    )
+
+    contracts = [
+        row for row in context.details if row.anomaly_entity_type == "CONTRACT"
+    ]
+    expiry = next(row for row in context.details if row.anomaly_entity_type == "EXPIRY")
+    for row in contracts:
+        contract_payload = _postgres_jsonb_bound_value(
+            "contract_snapshot", row.contract_snapshot
+        )
+        expiry_payload = _postgres_jsonb_bound_value(
+            "expiry_activity_recap", row.expiry_activity_recap
+        )
+        assert contract_payload is not None
+        assert expiry_payload is None
+        assert _payload_check_satisfied("CONTRACT", contract_payload, expiry_payload)
+
+    contract_payload = _postgres_jsonb_bound_value(
+        "contract_snapshot", expiry.contract_snapshot
+    )
+    expiry_payload = _postgres_jsonb_bound_value(
+        "expiry_activity_recap", expiry.expiry_activity_recap
+    )
+    assert contract_payload is None
+    assert expiry_payload is not None
+    assert _payload_check_satisfied("EXPIRY", contract_payload, expiry_payload)
 
 
 def test_refresh_cannot_mutate_frozen_baseline(monkeypatch: pytest.MonkeyPatch) -> None:

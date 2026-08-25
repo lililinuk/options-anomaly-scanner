@@ -1,8 +1,11 @@
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
 import app.api.routes.scans as scan_routes
+import app.scanner.candidate_persistence as candidate_persistence
 import app.scanner.v13 as scanner_v13
 from app.api.routes.scans import (
     _activity_public,
@@ -15,8 +18,11 @@ from app.api.routes.scans import (
 )
 from app.config.settings import Settings
 from app.core.time import is_xnys_session
+from app.db.models import ProductCandidate, ScanRun, ScanStage
+from app.scanner.candidate_projection import Stage4CandidateProjection
 from app.scanner.clusters import PositioningClusterContract, build_positioning_clusters
 from app.scanner.history import OiHistoryPoint, contract_persistence
+from app.scanner.service import completion_status
 from app.scanner.vnext import (
     ACTIVE_DISCOVERY_FAMILIES,
     REMOVED_ACTIVE_DISCOVERY_FAMILIES,
@@ -97,6 +103,91 @@ class _PersistenceSession:
         return None
 
 
+class _MissingStructureSession(_PersistenceSession):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.added: list[object] = []
+
+    def add(self, row: object) -> None:
+        self.added.append(row)
+
+    def flush(self) -> None:
+        return None
+
+
+def _scanner_with_missing_deep_dive_archive(*, partial: bool) -> tuple[object, object]:
+    session = _MissingStructureSession()
+    scanner = object.__new__(scanner_v13.Mag7Scanner)
+    scanner.partial = partial
+    scanner.session = session
+    scanner.run = SimpleNamespace(id=uuid4())
+    scanner._stage = lambda *_args, **_kwargs: None
+
+    async def no_persisted_radar(
+        _selected: list[object], _contracts: list[object]
+    ) -> int:
+        return 0
+
+    scanner._radar = no_persisted_radar
+    expiry = SimpleNamespace(
+        id=uuid4(),
+        ticker="AMZN",
+        expiration=date(2026, 8, 21),
+        vendor_oi_date=date(2026, 8, 11),
+    )
+    return scanner, expiry
+
+
+def _diagnostic_projection() -> Stage4CandidateProjection:
+    trigger_counts = {
+        "AAPL": 13,
+        "AMZN": 10,
+        "GOOGL": 9,
+        "META": 4,
+        "MSFT": 5,
+        "NVDA": 27,
+        "TSLA": 14,
+    }
+    observed_at = datetime(2026, 8, 20, 6, 47, tzinfo=timezone.utc)
+    anomalies: list[dict[str, object]] = []
+    for ticker, trigger_count in trigger_counts.items():
+        for index in range(trigger_count):
+            source_id = uuid4()
+            anomalies.append(
+                {
+                    "ticker": ticker,
+                    "evidence_family": "EXPIRY_ACTIVITY",
+                    "anomaly_entity": "EXPIRY",
+                    "anomaly_identity": f"{ticker}-EXPIRY-{index}",
+                    "evidence_date": date(2026, 8, 20),
+                    "qualifies_current_candidate": True,
+                    "source_evidence_identity": f"expiry_observation:{source_id}",
+                    "source_radar_observation_id": None,
+                    "source_expiry_observation_id": source_id,
+                    "source_contract_observation_id": None,
+                    "source_raw_payload_id": None,
+                    "trigger_first_knowledge_at": observed_at,
+                    "source_first_received_at": observed_at,
+                    "vendor_observed_at": observed_at,
+                    "local_captured_at": observed_at,
+                    "source_ids": {"raw_payload_ids": [], "source_request_ids": []},
+                    "source_time_provenance": {},
+                    "specification_version": "phase2a_vnext_stage4b",
+                    "current_trigger_freshness": None,
+                    "deep_dive_selected_for_current_run": ticker
+                    in {"AAPL", "AMZN", "META", "NVDA"},
+                }
+            )
+    return Stage4CandidateProjection(
+        radar_rows=[],
+        persistence_rows=[],
+        persistence_analytics=[],
+        activity_rows=[],
+        anomaly_pool=anomalies,
+        product_candidates=group_product_candidates(anomalies),
+    )
+
+
 def _run_persistence_selection(
     rows: list[SimpleNamespace], monkeypatch: object, policy: PersistenceFreshnessPolicy
 ) -> tuple[list[SimpleNamespace], SimpleNamespace, _PersistenceSession]:
@@ -123,6 +214,115 @@ def _run_persistence_selection(
     monkeypatch.setattr(scanner_v13, "persistence_freshness_policy", lambda: policy)
     selected = scanner_v13.Mag7Scanner._select_dual(scanner, [ticker], [expiry])
     return selected, expiry, session
+
+
+def test_missing_post_candidate_structure_archive_keeps_materialization_eligible(
+    monkeypatch,
+) -> None:
+    scanner, expiry = _scanner_with_missing_deep_dive_archive(partial=False)
+
+    contracts, clusters, radar_matches = asyncio.run(
+        scanner._structure_scan([expiry], date(2026, 8, 20))
+    )
+
+    assert contracts == []
+    assert clusters == []
+    assert radar_matches == 0
+    assert scanner.session.added == []
+    assert scanner.partial is False
+    status = completion_status(
+        partial=scanner.partial,
+        budget_limited=False,
+        data_pending=False,
+    )
+    assert status == "COMPLETE"
+
+    cutoff = datetime(2026, 8, 20, 6, 47, tzinfo=timezone.utc)
+    run = ScanRun(
+        id=uuid4(),
+        trigger="test",
+        status=status,
+        started_at=cutoff - timedelta(minutes=3),
+        completed_at=cutoff,
+        market_date=date(2026, 8, 20),
+        specification_version="phase2a_vnext_stage4b",
+        configuration_snapshot={},
+        summary={},
+    )
+    projection = _diagnostic_projection()
+    materialization_session = _MissingStructureSession()
+    monkeypatch.setattr(
+        candidate_persistence,
+        "load_product_candidates_for_scan",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        candidate_persistence,
+        "load_stage4_candidate_projection",
+        lambda *_args, **_kwargs: projection,
+    )
+
+    candidates = candidate_persistence.materialize_successful_scan_candidates(
+        materialization_session,
+        run,
+        materialized_at=cutoff,
+    )
+
+    assert len(candidates) == 7
+    assert sum(len(candidate.triggers) for candidate in candidates) == 82
+    assert all(isinstance(candidate, ProductCandidate) for candidate in candidates)
+    assert run.candidate_materialized_at == cutoff
+
+
+def test_missing_structure_archive_preserves_legitimate_preexisting_partial() -> None:
+    scanner, expiry = _scanner_with_missing_deep_dive_archive(partial=True)
+
+    contracts, clusters, radar_matches = asyncio.run(
+        scanner._structure_scan([expiry], date(2026, 8, 20))
+    )
+
+    assert contracts == []
+    assert clusters == []
+    assert radar_matches == 0
+    assert scanner.session.added == []
+    assert scanner.partial is True
+    assert completion_status(
+        partial=scanner.partial,
+        budget_limited=False,
+        data_pending=False,
+    ) == "PARTIAL"
+
+
+def test_active_stage4_vnext_stage_identifiers_fit_scan_stage_contract() -> None:
+    analysis_date = date(2026, 8, 18)
+    expiry = SimpleNamespace(
+        id=1,
+        ticker="AAPL",
+        expiration=date(2026, 8, 21),
+        dte_at_detection=3,
+        same_day_activity_score=Decimal("80"),
+        deep_dive_eligible=True,
+        radar_route_eligible=False,
+        persistent_route_eligible=False,
+        trigger_sources=["EXPIRY_ACTIVITY"],
+        selected_for_deep_scan=False,
+    )
+    ticker = SimpleNamespace(ticker="AAPL", selected_for_deep_scan=False)
+    stage_identifiers: list[str] = []
+    scanner = SimpleNamespace(
+        run=SimpleNamespace(market_date=analysis_date),
+        session=_PersistenceSession([]),
+        _stage=lambda stage, **_details: stage_identifiers.append(stage),
+    )
+
+    selected = scanner_v13.Mag7Scanner._select_dual(scanner, [ticker], [expiry])
+    max_stage_length = ScanStage.__table__.c.stage.type.length
+
+    assert selected == [expiry]
+    assert stage_identifiers == ["S4_VNEXT_DEEP_BUDGET_SELECTION"]
+    assert len(stage_identifiers[0]) == 30
+    assert all(stage.startswith("S4_VNEXT_") for stage in stage_identifiers)
+    assert all(len(stage) <= max_stage_length for stage in stage_identifiers)
 
 
 def test_active_family_set_is_exact_and_removed_families_are_explicit() -> None:

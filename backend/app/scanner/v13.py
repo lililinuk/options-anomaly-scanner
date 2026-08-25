@@ -396,7 +396,7 @@ class Mag7Scanner(V12Mag7Scanner):
             if row.id not in selected_ids
         ]
         self._stage(
-            "S4_VNEXT_DEEP_DIVE_BUDGET_SELECTION",
+            "S4_VNEXT_DEEP_BUDGET_SELECTION",
             route_priority=["RADAR_EVENT", "EXPIRY_ACTIVITY", "CONTRACT_PERSISTENCE"],
             selected_expiries=len(selected),
             eligible_expiries=len(ordered),
@@ -456,7 +456,13 @@ class Mag7Scanner(V12Mag7Scanner):
     async def _structure_scan(
         self, selected: list[ExpiryObservation], market_day: date
     ) -> tuple[list[ContractScanObservation], list[StrikeCluster], int]:
+        partial_before_deep_dive = self.partial
         contracts, clusters, radar_matches = await super()._structure_scan(selected, market_day)
+        # Structure is optional post-candidate context in vNext.  The inherited scanner marks a
+        # missing complete chain archive as run-level PARTIAL; keep the missing structure rows
+        # absent, but do not let that Deep-Dive-only condition suppress candidate materialization.
+        # A legitimate partial condition established before Deep Dive remains authoritative.
+        self.partial = partial_before_deep_dive
         policy = persistence_freshness_policy()
         expiry_by_id = {row.id: row for row in selected}
         for contract in contracts:
