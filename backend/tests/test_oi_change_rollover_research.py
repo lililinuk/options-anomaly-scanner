@@ -242,7 +242,7 @@ def test_research_module_has_no_database_write_path() -> None:
     assert "DDL" not in source
 
 
-def test_workflow_is_isolated_and_has_the_exact_august_schedule() -> None:
+def test_workflow_is_isolated_and_manual_only_after_experiment_closeout() -> None:
     workflow = (
         Path(__file__).resolve().parents[2]
         / ".github"
@@ -250,20 +250,16 @@ def test_workflow_is_isolated_and_has_the_exact_august_schedule() -> None:
         / "oi-change-rollover-timing-experiment.yml"
     ).read_text(encoding="utf-8")
 
-    for cron in (
-        "0 9-13 * * 1-5",
-        "25 13 * * 1-5",
-        "45 13 * * 1-5",
-        "15 14 * * 1-5",
-        "45 14 * * 1-5",
-        "15 15 * * 1-5",
-    ):
-        assert f'cron: "{cron}"' in workflow
+    assert "schedule:" not in workflow
+    assert "cron:" not in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "default: dry_run" in workflow
+    assert "- dry_run" in workflow
+    assert "- live" in workflow
     assert "oi-change-rollover-timing-experiment" in workflow
     assert "NIGHTWATCH_API_KEY: ${{ secrets.NIGHTWATCH_API_KEY }}" in workflow
     assert "DATABASE_URL" not in workflow
     assert "${{ runner.temp }}" not in workflow
     assert "PRIOR_DIR: ../.oi-change-rollover-prior" in workflow
     assert "dealer-gex-daily-archive" not in workflow
-    assert "workflow_dispatch:" in workflow
     assert "actions/upload-artifact@v6" in workflow

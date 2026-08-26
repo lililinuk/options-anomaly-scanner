@@ -1,13 +1,6 @@
 name: Nightwatch OI Change Rollover Timing Experiment
 
 on:
-  schedule:
-    - cron: "0 9-13 * * 1-5"
-    - cron: "25 13 * * 1-5"
-    - cron: "45 13 * * 1-5"
-    - cron: "15 14 * * 1-5"
-    - cron: "45 14 * * 1-5"
-    - cron: "15 15 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
