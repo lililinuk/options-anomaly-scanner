@@ -248,7 +248,7 @@ async def run_archive_mag7_oi() -> int:
         f"contracts_persisted={summary.contracts_persisted} "
         f"consumed_units={summary.consumed_quota_units} network_attempts={summary.network_attempts}"
     )
-    return 0
+    return 0 if summary.status in {"COMPLETE", "NO_NEW_VENDOR_OI_SNAPSHOT"} else 6
 
 
 async def run_archive_mag7_daily(*, mode: str, scheduled: bool) -> int:

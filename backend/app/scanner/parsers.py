@@ -329,6 +329,8 @@ class ArchivedChainContract:
 @dataclass(frozen=True)
 class CompleteChain:
     complete: bool
+    reason: str
+    invalid_row_reasons: dict[str, int]
     contracts: tuple[ArchivedChainContract, ...]
     returned_count: int
     total_contracts: int | None
@@ -340,37 +342,84 @@ class CompleteChain:
     open_interest_as_of: datetime | None
 
 
+def _archived_chain_row_issue(row: Any, expected_expiration: date) -> str | None:
+    if not isinstance(row, dict):
+        return "ROW_NOT_OBJECT"
+    if not _text(row, "contract_symbol"):
+        return "MISSING_CONTRACT_SYMBOL"
+    if _date(row, "expiration") != expected_expiration:
+        return "EXPIRATION_MISMATCH"
+    if (_text(row, "right") or "").upper() not in {"C", "P"}:
+        return "INVALID_RIGHT"
+    strike = _decimal(_number(row, "strike_usd"))
+    if strike is None or strike <= 0:
+        return "INVALID_STRIKE"
+    if _number(row, "open_interest") is None:
+        return "INVALID_OPEN_INTEREST"
+    return None
+
+
 def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteChain:
-    data = payload.get("data") if isinstance(payload, dict) else None
+    payload_is_object = isinstance(payload, dict)
+    data = payload.get("data") if payload_is_object else None
     meta = payload.get("_meta") if isinstance(payload, dict) else None
+    data_is_object = isinstance(data, dict)
     data = data if isinstance(data, dict) else {}
     meta = meta if isinstance(meta, dict) else {}
-    rows = data.get("contracts") if isinstance(data.get("contracts"), list) else []
+    contracts_value = data.get("contracts")
+    rows = contracts_value if isinstance(contracts_value, list) else []
     total_raw = data.get("total_contracts")
-    total = int(total_raw) if isinstance(total_raw, (int, float)) else None
+    total = (
+        int(total_raw)
+        if isinstance(total_raw, (int, float)) and not isinstance(total_raw, bool)
+        else None
+    )
     truncated = meta.get("truncated") if isinstance(meta.get("truncated"), bool) else None
     chain_open_interest_as_of = _datetime(data.get("open_interest_as_of"))
-    complete = truncated is False and total is not None and len(rows) == total
+    invalid_row_reasons: dict[str, int] = {}
+    symbols: set[str] = set()
+    duplicate_symbols = 0
+    for row in rows:
+        issue = _archived_chain_row_issue(row, expected_expiration)
+        if issue is not None:
+            invalid_row_reasons[issue] = invalid_row_reasons.get(issue, 0) + 1
+            continue
+        assert isinstance(row, dict)
+        symbol = _text(row, "contract_symbol") or ""
+        if symbol in symbols:
+            duplicate_symbols += 1
+        symbols.add(symbol)
+    if duplicate_symbols:
+        invalid_row_reasons["DUPLICATE_CONTRACT_SYMBOL"] = duplicate_symbols
+
+    if not payload_is_object or not data_is_object or not isinstance(contracts_value, list):
+        reason = "INVALID_RESPONSE"
+    elif truncated is True:
+        reason = "TRUNCATED"
+    elif truncated is not False or total is None or total < 0:
+        reason = "INVALID_RESPONSE"
+    elif len(rows) < total:
+        # Repository/OpenAPI evidence exposes no continuation parameter for this endpoint.
+        reason = "PAGINATION_INCOMPLETE"
+    elif len(rows) != total or duplicate_symbols:
+        reason = "ROW_COUNT_MISMATCH"
+    elif invalid_row_reasons:
+        reason = "INVALID_RESPONSE"
+    else:
+        reason = "COMPLETE"
+
+    complete = reason == "COMPLETE"
     contracts: list[ArchivedChainContract] = []
     if complete:
         for row in rows:
-            if not isinstance(row, dict):
-                complete = False
-                break
+            assert isinstance(row, dict)
             symbol = _text(row, "contract_symbol")
             expiration = _date(row, "expiration")
             right = (_text(row, "right") or "").upper()
             strike = _decimal(_number(row, "strike_usd"))
             oi = _number(row, "open_interest")
-            if (
-                not symbol
-                or expiration != expected_expiration
-                or right not in {"C", "P"}
-                or strike is None
-                or oi is None
-            ):
-                complete = False
-                break
+            assert symbol and expiration == expected_expiration
+            assert right in {"C", "P"} and strike is not None and oi is not None
             contracts.append(
                 ArchivedChainContract(
                     symbol=symbol,
@@ -389,10 +438,10 @@ def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteCha
                     open_interest_as_of=_datetime(row.get("open_interest_as_of")),
                 )
             )
-    if not complete:
-        contracts = []
     return CompleteChain(
         complete=complete,
+        reason=reason,
+        invalid_row_reasons=dict(sorted(invalid_row_reasons.items())),
         contracts=tuple(contracts),
         returned_count=len(rows),
         total_contracts=total,

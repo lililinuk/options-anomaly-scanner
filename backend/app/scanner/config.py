@@ -32,6 +32,9 @@ class ArchiveLimits:
     max_dte: int = 180
     max_consumed_units: int = 250
     max_network_attempts: int = 350
+    materialization_max_attempts: int = 3
+    materialization_max_wait_seconds: float = 30.0
+    materialization_default_retry_after_seconds: float = 2.0
 
 
 UNIVERSE: Final = ("AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA")

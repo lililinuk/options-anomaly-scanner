@@ -58,6 +58,15 @@ class NightwatchClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def wait_for_materialization(self, delay_seconds: float) -> None:
+        """Wait between vendor-directed materialization polls.
+
+        Kept on the client abstraction so callers and tests can observe the exact delay without
+        bypassing transport policy.
+        """
+
+        await asyncio.sleep(delay_seconds)
+
     async def health(self) -> HealthResponse:
         result = await self.request("GET", "/v1/health", authenticated=False, command="health")
         return HealthResponse.model_validate(result.payload)
@@ -155,7 +164,13 @@ class NightwatchClient:
             consumed_quota=(
                 False
                 if path in ZERO_QUOTA_PATHS
-                else (True if response.status_code == 200 else None)
+                else (
+                    True
+                    if response.status_code == 200
+                    else False
+                    if response.status_code == 202
+                    else None
+                )
             ),
             quota_limit=quota.quota_limit,
             quota_remaining=quota.quota_remaining,

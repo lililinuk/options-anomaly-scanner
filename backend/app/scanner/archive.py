@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal
@@ -107,9 +108,11 @@ class DailyOiArchiver:
             for ticker_index, ticker in enumerate(UNIVERSE):
                 try:
                     await self._archive_ticker(ticker)
+                    self._emit_ticker_summary(ticker)
                 except ArchiveBudgetExceeded:
                     self.budget_limited = True
                     self._mark_unattempted_tickers(UNIVERSE[ticker_index:])
+                    self._emit_ticker_summary(ticker)
                     break
                 except NightwatchError as error:
                     self.session.rollback()
@@ -132,22 +135,17 @@ class DailyOiArchiver:
                         "http_status": error.status_code,
                     }
                     self.session.commit()
+                    self._emit_ticker_summary(ticker)
+                except Exception as error:
+                    print(
+                        "Daily OI ticker: "
+                        f"ticker={ticker} status=FAILED safe_error={type(error).__name__}"
+                    )
+                    raise
             return self._finish(started_clock)
         except Exception as error:
             failed = True
-            self.session.rollback()
-            if self.run:
-                try:
-                    run = self.session.get(DailyOiArchiveRun, self.run.id)
-                    if run is not None:
-                        run.status = "FAILED"
-                        run.completed_at = utc_now()
-                        run.consumed_quota_units = self.budget.consumed
-                        run.network_attempts = self.budget.attempts
-                        run.summary = {"safe_error": type(error).__name__}
-                        self.session.commit()
-                except Exception:
-                    self.session.rollback()
+            self._finalize_failed_run(error)
             raise
         finally:
             try:
@@ -257,12 +255,14 @@ class DailyOiArchiver:
         expiry_items = list(snapshots.items())
         for expiry_index, (expiration, expiry_snapshot) in enumerate(expiry_items):
             try:
-                chain_result, chain_raw = await self._fetch(
-                    f"/v1/options/chain-snapshot/{ticker}",
-                    params={"expiration": expiration.isoformat()},
+                (
+                    chain_result,
+                    chain_raw,
+                    materialization_reason,
+                    materialization_attempts,
+                ) = await self._fetch_materialized_chain(
                     ticker=ticker,
                     expiration=expiration,
-                    command="daily_archive.options.chain_snapshot",
                 )
             except ArchiveBudgetExceeded:
                 omitted = mark_expiry_budget_omissions(expiry_items[expiry_index:])
@@ -294,17 +294,35 @@ class DailyOiArchiver:
                 )
                 self.session.commit()
                 continue
-            chain = parse_complete_chain(chain_result.payload, expiration)
-            if not chain.complete:
-                expiry_snapshot.chain_status = "INCOMPLETE_CHAIN"
+            if materialization_reason is not None:
+                expiry_snapshot.chain_status = materialization_reason
                 ticker_status.incomplete_chains += 1
                 incomplete_details.append(
                     {
                         "expiration": expiration.isoformat(),
+                        "reason": materialization_reason,
+                        "returned": 0,
+                        "total": None,
+                        "truncated": None,
+                        "http_status": chain_result.status_code,
+                        "materialization_attempts": materialization_attempts,
+                    }
+                )
+                self.session.commit()
+                continue
+            chain = parse_complete_chain(chain_result.payload, expiration)
+            if not chain.complete:
+                expiry_snapshot.chain_status = chain.reason
+                ticker_status.incomplete_chains += 1
+                incomplete_details.append(
+                    {
+                        "expiration": expiration.isoformat(),
+                        "reason": chain.reason,
                         "returned": chain.returned_count,
                         "total": chain.total_contracts,
                         "truncated": chain.truncated,
                         "http_status": chain_result.status_code,
+                        "invalid_row_reasons": chain.invalid_row_reasons,
                     }
                 )
                 self.session.commit()
@@ -353,8 +371,120 @@ class DailyOiArchiver:
         ticker_status.details = {
             "incomplete_expiries": incomplete_details,
             "chain_unavailable": unavailable_details,
+            "incomplete_reason_counts": dict(
+                sorted(
+                    Counter(
+                        [
+                            str(item["reason"])
+                            for item in incomplete_details
+                            if item.get("reason")
+                        ]
+                        + [
+                            str(item["classification"])
+                            for item in unavailable_details
+                            if item.get("classification")
+                        ]
+                    ).items()
+                )
+            ),
         }
         self.session.commit()
+
+    async def _fetch_materialized_chain(
+        self,
+        *,
+        ticker: str,
+        expiration: date,
+    ) -> tuple[NightwatchResult, RawVendorPayload, str | None, int]:
+        started = perf_counter()
+        attempts = 0
+        while True:
+            attempts += 1
+            result, raw = await self._fetch(
+                f"/v1/options/chain-snapshot/{ticker}",
+                params={"expiration": expiration.isoformat()},
+                ticker=ticker,
+                expiration=expiration,
+                command="daily_archive.options.chain_snapshot",
+            )
+            if result.status_code != 202:
+                return result, raw, None, attempts
+
+            delay = materialization_retry_after_seconds(result)
+            elapsed = perf_counter() - started
+            if (
+                attempts >= ARCHIVE_LIMITS.materialization_max_attempts
+                or elapsed + delay > ARCHIVE_LIMITS.materialization_max_wait_seconds
+            ):
+                return result, raw, "MATERIALIZATION_TIMEOUT", attempts
+            await self.client.wait_for_materialization(delay)
+
+    def _emit_ticker_summary(self, ticker: str) -> None:
+        assert self.run
+        row = self.session.scalar(
+            select(DailyOiArchiveTicker).where(
+                DailyOiArchiveTicker.archive_run_id == self.run.id,
+                DailyOiArchiveTicker.ticker == ticker,
+            )
+        )
+        if not isinstance(row, DailyOiArchiveTicker):
+            return
+        details = row.details if isinstance(row.details, dict) else {}
+        reason_counts = details.get("incomplete_reason_counts")
+        if not isinstance(reason_counts, dict):
+            reason_counts = {}
+        reasons = ",".join(
+            f"{reason}={count}" for reason, count in sorted(reason_counts.items())
+        ) or "none"
+        print(
+            "Daily OI ticker: "
+            f"ticker={row.ticker} status={row.status} "
+            f"vendor_oi_date={row.vendor_oi_date.isoformat() if row.vendor_oi_date else None} "
+            f"expiries_expected={row.expiries_expected} "
+            f"complete_chains={row.complete_chains} "
+            f"incomplete_chains={row.incomplete_chains} "
+            f"contracts_persisted={row.contracts_persisted} "
+            f"incomplete_reasons={reasons}"
+        )
+
+    def _finalize_failed_run(self, error: Exception) -> None:
+        if self.run is None:
+            self.session.rollback()
+            return
+        run_id = self.run.id
+        values = {
+            "status": "FAILED",
+            "completed_at": utc_now(),
+            "consumed_quota_units": self.budget.consumed,
+            "network_attempts": self.budget.attempts,
+            "summary": {"safe_error": type(error).__name__},
+        }
+
+        def assign(run: DailyOiArchiveRun) -> None:
+            for name, value in values.items():
+                setattr(run, name, value)
+
+        self.session.rollback()
+        try:
+            run = self.session.get(DailyOiArchiveRun, run_id)
+            if run is not None:
+                assign(run)
+                self.session.commit()
+                return
+        except Exception:
+            self.session.rollback()
+
+        # A failed SQLAlchemy transaction must not poison terminal-state persistence. Recover
+        # through a fresh session bound to the same database if the original session cannot commit.
+        try:
+            bind = self.session.get_bind()
+            with Session(bind=bind, expire_on_commit=False) as recovery:
+                run = recovery.get(DailyOiArchiveRun, run_id)
+                if run is not None:
+                    assign(run)
+                    recovery.commit()
+        except Exception:
+            self.session.rollback()
 
     def _mark_unattempted_tickers(self, tickers: tuple[str, ...]) -> None:
         assert self.run
@@ -462,6 +592,18 @@ class DailyOiArchiver:
             self.budget.attempts,
             elapsed,
         )
+
+
+def materialization_retry_after_seconds(result: NightwatchResult) -> float:
+    payload = result.payload if isinstance(result.payload, dict) else {}
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+    value = meta.get("retry_after_seconds")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    header_delay = result.quota.retry_after_seconds
+    if header_delay is not None:
+        return header_delay
+    return ARCHIVE_LIMITS.materialization_default_retry_after_seconds
 
 
 def _dec(value: float | int | Decimal | None) -> Decimal | None:

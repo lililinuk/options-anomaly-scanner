@@ -514,6 +514,7 @@ async def test_archiver_failure_rolls_back_and_reraises_original_error(
     assert session.rollback_count >= 1
     assert session.poisoned is False
     assert session.run.status == "FAILED"
+    assert session.run.completed_at is not None
     assert session.run.summary == {"safe_error": "RuntimeError"}
 
 
