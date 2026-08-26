@@ -151,14 +151,20 @@ class DailyDataPipeline:
             subjobs: dict[str, dict[str, Any]] = {}
             oi_consumed = oi_attempts = 0
             if selected_mode in {DailyPipelineMode.ALL, DailyPipelineMode.RADAR_OI}:
+                archiver = DailyOiArchiver(self.session, self.client)
                 try:
-                    oi = await DailyOiArchiver(self.session, self.client).execute(
-                        trigger="daily_pipeline"
-                    )
+                    oi = await archiver.execute(trigger="daily_pipeline")
                     oi_consumed, oi_attempts = oi.consumed_quota_units, oi.network_attempts
                     subjobs["daily_oi"] = _archive_summary(oi)
                 except Exception as error:
-                    subjobs["daily_oi"] = _failed_subjob(error)
+                    self.session.rollback()
+                    oi_consumed = archiver.budget.consumed
+                    oi_attempts = archiver.budget.attempts
+                    subjobs["daily_oi"] = _failed_subjob(
+                        error,
+                        consumed_quota_units=oi_consumed,
+                        network_attempts=oi_attempts,
+                    )
 
             self.client._usage_observer = self.budget.observe
             if selected_mode in {DailyPipelineMode.ALL, DailyPipelineMode.ACTIVITY}:
@@ -879,13 +885,22 @@ def _archive_summary(summary: ArchiveSummary) -> dict[str, Any]:
     }
 
 
-def _failed_subjob(error: Exception) -> dict[str, Any]:
+def _failed_subjob(
+    error: Exception,
+    *,
+    consumed_quota_units: int = 0,
+    network_attempts: int = 0,
+) -> dict[str, Any]:
     return {
         "status": "FAILED",
         "tickers_attempted": 0,
         "tickers_skipped": 0,
         "rows_persisted": 0,
-        "details": {"safe_error": type(error).__name__},
+        "details": {
+            "safe_error": type(error).__name__,
+            "consumed_quota_units": consumed_quota_units,
+            "network_attempts": network_attempts,
+        },
     }
 
 

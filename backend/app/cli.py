@@ -291,7 +291,7 @@ async def run_archive_mag7_daily(*, mode: str, scheduled: bool) -> int:
         f"network_attempts={summary.network_attempts} "
         f"elapsed_seconds={summary.elapsed_seconds}"
     )
-    return 0
+    return 0 if summary.status in {"COMPLETE", "NO_NEW_DATA"} else 6
 
 
 async def run_backfill_mag7_radar() -> int:

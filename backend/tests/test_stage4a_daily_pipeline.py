@@ -10,11 +10,18 @@ from app.db.models import (
     ContractOiDailySnapshot,
     DailyCollectionCoverage,
     DailyOiArchiveTicker,
+    ExpiryOiDailySnapshot,
     ZeroDteActivityDailySnapshot,
     ZeroDteActivitySessionSnapshot,
 )
+from app.nightwatch.errors import NightwatchError
 from app.scanner.archive import DailyOiArchiver
-from app.scanner.daily import DailyActivityCollector, DailyRadarCollector
+from app.scanner.daily import (
+    DailyActivityCollector,
+    DailyDataPipeline,
+    DailyRadarCollector,
+    SubjobSummary,
+)
 from app.scanner.daily_semantics import (
     ZeroDteSnapshotKind,
     activity_session_plan,
@@ -211,9 +218,7 @@ def test_clean_twenty_observation_query_reads_canonical_v2_only() -> None:
 
 def test_contract_open_interest_as_of_parser_preserves_only_explicit_values() -> None:
     parsed = parse_complete_chain(_chain_payload(), date(2026, 9, 18))
-    assert parsed.contracts[0].open_interest_as_of == datetime(
-        2026, 8, 11, 11, tzinfo=UTC
-    )
+    assert parsed.contracts[0].open_interest_as_of == datetime(2026, 8, 11, 11, tzinfo=UTC)
     assert parsed.contracts[1].open_interest_as_of is None
     assert parsed.open_interest_as_of == datetime(2026, 8, 11, 10, 30, tzinfo=UTC)
 
@@ -315,3 +320,244 @@ def test_new_coverage_writes_use_one_explicit_date_identity() -> None:
     assert "vendor_oi_date=None" in activity_source
     assert "activity_market_date=None" in radar_source
     assert "vendor_oi_date=observation_date" in radar_source
+
+
+def _oi_surface_payload(expiries: list[str]) -> dict[str, object]:
+    return {
+        "data": {
+            "as_of": "2026-08-11T04:00:00Z",
+            "expiries": [
+                {
+                    "expiry": expiration,
+                    "date": "2026-08-11",
+                    "call_oi": 10,
+                    "put_oi": 20,
+                }
+                for expiration in expiries
+            ],
+        }
+    }
+
+
+class _ArchiveSession:
+    def __init__(self) -> None:
+        self.added: list[object] = []
+        self.rollback_count = 0
+        self.poisoned = False
+
+    def scalar(self, _statement):  # type: ignore[no-untyped-def]
+        return None
+
+    def add(self, row: object) -> None:
+        if isinstance(row, DailyOiArchiveTicker):
+            row.complete_chains = row.complete_chains or 0
+            row.incomplete_chains = row.incomplete_chains or 0
+            row.contracts_persisted = row.contracts_persisted or 0
+        self.added.append(row)
+
+    def commit(self) -> None:
+        if self.poisoned:
+            raise AssertionError("commit attempted before rollback")
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+        self.poisoned = False
+
+
+@pytest.mark.asyncio
+async def test_expired_chain_404_preserves_oi_and_continues_remaining_expiries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.scanner.archive.utc_now",
+        lambda: datetime(2026, 8, 26, 12, tzinfo=UTC),
+    )
+    session = _ArchiveSession()
+    archiver = DailyOiArchiver(session, object())  # type: ignore[arg-type]
+    archiver.run = SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_fetch(path: str, *_args, **kwargs):  # type: ignore[no-untyped-def]
+        if "oi-per-expiry" in path:
+            return (
+                SimpleNamespace(
+                    payload=_oi_surface_payload(["2026-08-24", "2026-09-18"]),
+                    vendor_request_id="surface",
+                    request_id="surface-client",
+                ),
+                SimpleNamespace(id=uuid.uuid4()),
+            )
+        if kwargs["expiration"] == date(2026, 8, 24):
+            raise NightwatchError(
+                "expired chain unavailable",
+                status_code=404,
+                code="NOT_FOUND",
+            )
+        return (
+            SimpleNamespace(
+                payload=_chain_payload(),
+                vendor_request_id="chain",
+                request_id="chain-client",
+                status_code=200,
+            ),
+            SimpleNamespace(id=uuid.uuid4()),
+        )
+
+    archiver._fetch = fake_fetch  # type: ignore[method-assign]
+    await archiver._archive_ticker("NVDA")
+
+    ticker_rows = [row for row in session.added if isinstance(row, DailyOiArchiveTicker)]
+    expiry_rows = [row for row in session.added if isinstance(row, ExpiryOiDailySnapshot)]
+    contract_rows = [row for row in session.added if isinstance(row, ContractOiDailySnapshot)]
+    assert len(ticker_rows) == 1
+    assert ticker_rows[0].status == "COMPLETE"
+    assert ticker_rows[0].details["chain_unavailable"] == [
+        {
+            "expiration": "2026-08-24",
+            "classification": "EXPIRED_EXPIRY_CHAIN_404",
+            "safe_error": "NightwatchError",
+            "error_code": "NOT_FOUND",
+            "http_status": 404,
+            "blocks_active_coverage": False,
+        }
+    ]
+    assert [(row.expiration, row.chain_status) for row in expiry_rows] == [
+        (date(2026, 8, 24), "EXPIRED_CHAIN_UNAVAILABLE"),
+        (date(2026, 9, 18), "COMPLETE"),
+    ]
+    assert expiry_rows[0].call_oi == 10
+    assert expiry_rows[0].put_oi == 20
+    assert len(contract_rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_active_chain_404_is_truthful_fail_closed_without_duplicate_or_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.scanner.archive.utc_now",
+        lambda: datetime(2026, 8, 26, 12, tzinfo=UTC),
+    )
+    session = _ArchiveSession()
+    archiver = DailyOiArchiver(session, object())  # type: ignore[arg-type]
+    archiver.run = SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_fetch(path: str, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        if "oi-per-expiry" in path:
+            return (
+                SimpleNamespace(
+                    payload=_oi_surface_payload(["2026-09-18"]),
+                    vendor_request_id="surface",
+                    request_id="surface-client",
+                ),
+                SimpleNamespace(id=uuid.uuid4()),
+            )
+        raise NightwatchError("active chain unavailable", status_code=404, code="NOT_FOUND")
+
+    archiver._fetch = fake_fetch  # type: ignore[method-assign]
+    await archiver._archive_ticker("NVDA")
+
+    ticker_rows = [row for row in session.added if isinstance(row, DailyOiArchiveTicker)]
+    expiry_rows = [row for row in session.added if isinstance(row, ExpiryOiDailySnapshot)]
+    assert len(ticker_rows) == 1
+    assert ticker_rows[0].status == "PARTIAL_INCOMPLETE_CHAIN"
+    assert ticker_rows[0].details["chain_unavailable"][0]["classification"] == (
+        "ACTIVE_EXPIRY_CHAIN_404"
+    )
+    assert ticker_rows[0].details["chain_unavailable"][0]["blocks_active_coverage"] is True
+    assert len(expiry_rows) == 1
+    assert expiry_rows[0].chain_status == "ACTIVE_CHAIN_UNAVAILABLE"
+    assert expiry_rows[0].total_oi == 30
+    assert not any(isinstance(row, ContractOiDailySnapshot) for row in session.added)
+
+
+@pytest.mark.asyncio
+async def test_archiver_failure_rolls_back_and_reraises_original_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = RuntimeError("original archive failure")
+
+    class Session(_ArchiveSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.run = None
+
+        def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            return True
+
+        def add(self, row: object) -> None:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()  # type: ignore[attr-defined]
+            if row.__class__.__name__ == "DailyOiArchiveRun":
+                self.run = row
+            super().add(row)
+
+        def get(self, _model, _identifier):  # type: ignore[no-untyped-def]
+            return self.run
+
+        def execute(self, _statement):  # type: ignore[no-untyped-def]
+            return None
+
+    session = Session()
+    archiver = DailyOiArchiver(session, SimpleNamespace())
+
+    async def fail_ticker(_ticker: str) -> None:
+        session.poisoned = True
+        raise original
+
+    monkeypatch.setattr(archiver, "_archive_ticker", fail_ticker)
+    monkeypatch.setattr("app.scanner.archive.UNIVERSE", ("AAPL",))
+
+    with pytest.raises(RuntimeError) as raised:
+        await archiver.execute(trigger="test")
+
+    assert raised.value is original
+    assert session.rollback_count >= 1
+    assert session.poisoned is False
+    assert session.run.status == "FAILED"
+    assert session.run.summary == {"safe_error": "RuntimeError"}
+
+
+@pytest.mark.asyncio
+async def test_daily_parent_recovers_session_and_preserves_archiver_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Session(_ArchiveSession):
+        def scalar(self, _statement):  # type: ignore[no-untyped-def]
+            return True
+
+        def add(self, row: object) -> None:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()  # type: ignore[attr-defined]
+            super().add(row)
+
+        def execute(self, _statement):  # type: ignore[no-untyped-def]
+            return None
+
+    session = Session()
+
+    class FailingArchiver:
+        def __init__(self, archive_session, _client) -> None:  # type: ignore[no-untyped-def]
+            assert archive_session is session
+            self.budget = SimpleNamespace(consumed=1, attempts=2)
+
+        async def execute(self, *, trigger: str):  # type: ignore[no-untyped-def]
+            assert trigger == "daily_pipeline"
+            session.poisoned = True
+            raise RuntimeError("archive failed")
+
+    async def healthy_radar(_collector):  # type: ignore[no-untyped-def]
+        assert session.poisoned is False
+        return SubjobSummary("COMPLETE", 7, 0, 7, {})
+
+    monkeypatch.setattr("app.scanner.daily.DailyOiArchiver", FailingArchiver)
+    monkeypatch.setattr(DailyRadarCollector, "execute", healthy_radar)
+    result = await DailyDataPipeline(session, SimpleNamespace()).execute(mode="radar-oi")
+
+    assert result.status == "PARTIAL"
+    assert result.subjobs["daily_oi"]["status"] == "FAILED"
+    assert result.subjobs["radar"]["status"] == "COMPLETE"
+    assert result.consumed_quota_units == 1
+    assert result.network_attempts == 2
+    assert result.subjobs["daily_oi"]["details"]["consumed_quota_units"] == 1
+    assert result.subjobs["daily_oi"]["details"]["network_attempts"] == 2
+    assert session.rollback_count >= 1

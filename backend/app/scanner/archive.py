@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.core.time import utc_now
+from app.core.time import market_date, utc_now
 from app.db.models import (
     ContractOiDailySnapshot,
     DailyOiArchiveRun,
@@ -82,6 +82,7 @@ class DailyOiArchiver:
 
     async def execute(self, *, trigger: str = "cli") -> ArchiveSummary:
         started_clock = perf_counter()
+        failed = False
         if not bool(
             self.session.scalar(
                 text("SELECT pg_try_advisory_lock(hashtext('mag7_daily_oi_archive'))")
@@ -111,30 +112,53 @@ class DailyOiArchiver:
                     self._mark_unattempted_tickers(UNIVERSE[ticker_index:])
                     break
                 except NightwatchError as error:
-                    self.session.add(
-                        DailyOiArchiveTicker(
-                            archive_run_id=self.run.id,
-                            ticker=ticker,
-                            status="VENDOR_ERROR",
-                            details={"safe_error": type(error).__name__},
+                    self.session.rollback()
+                    ticker_row = self.session.scalar(
+                        select(DailyOiArchiveTicker).where(
+                            DailyOiArchiveTicker.archive_run_id == self.run.id,
+                            DailyOiArchiveTicker.ticker == ticker,
                         )
                     )
+                    if ticker_row is None:
+                        ticker_row = DailyOiArchiveTicker(
+                            archive_run_id=self.run.id,
+                            ticker=ticker,
+                        )
+                        self.session.add(ticker_row)
+                    ticker_row.status = "VENDOR_ERROR"
+                    ticker_row.details = {
+                        "safe_error": type(error).__name__,
+                        "error_code": error.code,
+                        "http_status": error.status_code,
+                    }
                     self.session.commit()
             return self._finish(started_clock)
         except Exception as error:
+            failed = True
+            self.session.rollback()
             if self.run:
-                self.run.status = "FAILED"
-                self.run.completed_at = utc_now()
-                self.run.consumed_quota_units = self.budget.consumed
-                self.run.network_attempts = self.budget.attempts
-                self.run.summary = {"safe_error": type(error).__name__}
-                self.session.commit()
+                try:
+                    run = self.session.get(DailyOiArchiveRun, self.run.id)
+                    if run is not None:
+                        run.status = "FAILED"
+                        run.completed_at = utc_now()
+                        run.consumed_quota_units = self.budget.consumed
+                        run.network_attempts = self.budget.attempts
+                        run.summary = {"safe_error": type(error).__name__}
+                        self.session.commit()
+                except Exception:
+                    self.session.rollback()
             raise
         finally:
-            self.session.execute(
-                text("SELECT pg_advisory_unlock(hashtext('mag7_daily_oi_archive'))")
-            )
-            self.session.commit()
+            try:
+                self.session.execute(
+                    text("SELECT pg_advisory_unlock(hashtext('mag7_daily_oi_archive'))")
+                )
+                self.session.commit()
+            except Exception:
+                self.session.rollback()
+                if not failed:
+                    raise
 
     async def _archive_ticker(self, ticker: str) -> None:
         assert self.run
@@ -228,6 +252,8 @@ class DailyOiArchiver:
         self.session.commit()
 
         incomplete_details: list[dict[str, Any]] = []
+        unavailable_details: list[dict[str, Any]] = []
+        active_chain_unavailable = False
         expiry_items = list(snapshots.items())
         for expiry_index, (expiration, expiry_snapshot) in enumerate(expiry_items):
             try:
@@ -244,6 +270,30 @@ class DailyOiArchiver:
                 ticker_status.details = {"budget_not_attempted_expiries": omitted}
                 self.session.commit()
                 raise
+            except NightwatchError as error:
+                if error.status_code != 404:
+                    raise
+                expired = expiration < market_date(utc_now())
+                classification = (
+                    "EXPIRED_EXPIRY_CHAIN_404" if expired else "ACTIVE_EXPIRY_CHAIN_404"
+                )
+                expiry_snapshot.chain_status = (
+                    "EXPIRED_CHAIN_UNAVAILABLE" if expired else "ACTIVE_CHAIN_UNAVAILABLE"
+                )
+                ticker_status.incomplete_chains += 1
+                active_chain_unavailable = active_chain_unavailable or not expired
+                unavailable_details.append(
+                    {
+                        "expiration": expiration.isoformat(),
+                        "classification": classification,
+                        "safe_error": type(error).__name__,
+                        "error_code": error.code,
+                        "http_status": error.status_code,
+                        "blocks_active_coverage": not expired,
+                    }
+                )
+                self.session.commit()
+                continue
             chain = parse_complete_chain(chain_result.payload, expiration)
             if not chain.complete:
                 expiry_snapshot.chain_status = "INCOMPLETE_CHAIN"
@@ -296,9 +346,14 @@ class DailyOiArchiver:
             ticker_status.contracts_persisted += len(chain.contracts)
             self.session.commit()
         ticker_status.status = (
-            "COMPLETE" if not ticker_status.incomplete_chains else "PARTIAL_INCOMPLETE_CHAIN"
+            "PARTIAL_INCOMPLETE_CHAIN"
+            if incomplete_details or active_chain_unavailable
+            else "COMPLETE"
         )
-        ticker_status.details = {"incomplete_expiries": incomplete_details}
+        ticker_status.details = {
+            "incomplete_expiries": incomplete_details,
+            "chain_unavailable": unavailable_details,
+        }
         self.session.commit()
 
     def _mark_unattempted_tickers(self, tickers: tuple[str, ...]) -> None:
