@@ -5,7 +5,10 @@ import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Any
+
+from app.scanner.config import ARCHIVE_LIMITS
 
 
 def _number(row: dict[str, Any], *names: str) -> float | None:
@@ -354,7 +357,13 @@ def _archived_chain_row_issue(row: Any, expected_expiration: date) -> str | None
     strike = _decimal(_number(row, "strike_usd"))
     if strike is None or strike <= 0:
         return "INVALID_STRIKE"
-    if _number(row, "open_interest") is None:
+    open_interest = _number(row, "open_interest")
+    if (
+        open_interest is None
+        or not isfinite(open_interest)
+        or open_interest < 0
+        or not open_interest.is_integer()
+    ):
         return "INVALID_OPEN_INTEREST"
     return None
 
@@ -398,17 +407,27 @@ def parse_complete_chain(payload: Any, expected_expiration: date) -> CompleteCha
         reason = "TRUNCATED"
     elif truncated is not False or total is None or total < 0:
         reason = "INVALID_RESPONSE"
-    elif len(rows) < total:
-        # Repository/OpenAPI evidence exposes no continuation parameter for this endpoint.
-        reason = "PAGINATION_INCOMPLETE"
-    elif len(rows) != total or duplicate_symbols:
-        reason = "ROW_COUNT_MISMATCH"
-    elif invalid_row_reasons:
+    elif any(
+        issue != "DUPLICATE_CONTRACT_SYMBOL" for issue in invalid_row_reasons
+    ):
         reason = "INVALID_RESPONSE"
+    elif duplicate_symbols:
+        reason = "ROW_COUNT_MISMATCH"
+    elif len(rows) == total:
+        reason = "FULL_COMPLETE"
+    elif (
+        total > len(rows)
+        and len(rows) == ARCHIVE_LIMITS.vendor_chain_contract_limit
+        and ARCHIVE_LIMITS.vendor_chain_pagination_supported is False
+    ):
+        # Nightwatch intentionally returns its full supported near-ATM product here,
+        # not the mathematically full expiry chain. The meta truncated=false flag does
+        # not describe this internal cap, so total/returned/limit define this case.
+        reason = "COMPLETE_BOUNDED_SNAPSHOT"
     else:
-        reason = "COMPLETE"
+        reason = "ROW_COUNT_MISMATCH"
 
-    complete = reason == "COMPLETE"
+    complete = reason in {"FULL_COMPLETE", "COMPLETE_BOUNDED_SNAPSHOT"}
     contracts: list[ArchivedChainContract] = []
     if complete:
         for row in rows:

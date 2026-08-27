@@ -51,6 +51,9 @@ class ArchiveSummary:
     consumed_quota_units: int
     network_attempts: int
     elapsed_seconds: float
+    full_complete_chains: int = 0
+    bounded_complete_chains: int = 0
+    true_incomplete_chains: int = 0
 
 
 class ArchiveBudget:
@@ -251,6 +254,9 @@ class DailyOiArchiver:
 
         incomplete_details: list[dict[str, Any]] = []
         unavailable_details: list[dict[str, Any]] = []
+        bounded_complete_details: list[dict[str, Any]] = []
+        full_complete_chains = 0
+        bounded_complete_chains = 0
         active_chain_unavailable = False
         expiry_items = list(snapshots.items())
         for expiry_index, (expiration, expiry_snapshot) in enumerate(expiry_items):
@@ -359,9 +365,36 @@ class DailyOiArchiver:
                         specification_version=SIGNAL_SPEC_VERSION,
                     )
                 )
-            expiry_snapshot.chain_status = "COMPLETE"
+            # Preserve the accepted persisted full-chain literal consumed by Radar.
+            # Bounded coverage remains explicitly distinct and is never promoted to
+            # the legacy full-chain eligibility marker.
+            expiry_snapshot.chain_status = (
+                "COMPLETE_BOUNDED_SNAPSHOT"
+                if chain.reason == "COMPLETE_BOUNDED_SNAPSHOT"
+                else "COMPLETE"
+            )
             ticker_status.complete_chains += 1
             ticker_status.contracts_persisted += len(chain.contracts)
+            if chain.reason == "COMPLETE_BOUNDED_SNAPSHOT":
+                bounded_complete_chains += 1
+                assert chain.total_contracts is not None
+                bounded_complete_details.append(
+                    {
+                        "expiration": expiration.isoformat(),
+                        "coverage_type": "COMPLETE_BOUNDED_SNAPSHOT",
+                        "coverage_scope": ARCHIVE_LIMITS.vendor_chain_coverage_scope,
+                        "full_chain_available": False,
+                        "vendor_contract_limit": ARCHIVE_LIMITS.vendor_chain_contract_limit,
+                        "vendor_total_contracts": chain.total_contracts,
+                        "contracts_returned": chain.returned_count,
+                        "contracts_omitted": chain.total_contracts - chain.returned_count,
+                        "pagination_supported": (
+                            ARCHIVE_LIMITS.vendor_chain_pagination_supported
+                        ),
+                    }
+                )
+            else:
+                full_complete_chains += 1
             self.session.commit()
         ticker_status.status = (
             "PARTIAL_INCOMPLETE_CHAIN"
@@ -371,6 +404,30 @@ class DailyOiArchiver:
         ticker_status.details = {
             "incomplete_expiries": incomplete_details,
             "chain_unavailable": unavailable_details,
+            "bounded_complete_expiries": bounded_complete_details,
+            "full_complete_chains": full_complete_chains,
+            "bounded_complete_chains": bounded_complete_chains,
+            "true_incomplete_chains": len(incomplete_details)
+            + sum(
+                bool(item.get("blocks_active_coverage")) for item in unavailable_details
+            ),
+            "accepted_lifecycle_unavailable_chains": sum(
+                not bool(item.get("blocks_active_coverage")) for item in unavailable_details
+            ),
+            "coverage_reason_counts": dict(
+                sorted(
+                    Counter(
+                        ["FULL_COMPLETE"] * full_complete_chains
+                        + ["COMPLETE_BOUNDED_SNAPSHOT"] * bounded_complete_chains
+                        + [
+                            str(item["classification"])
+                            for item in unavailable_details
+                            if item.get("classification")
+                            and not item.get("blocks_active_coverage")
+                        ]
+                    ).items()
+                )
+            ),
             "incomplete_reason_counts": dict(
                 sorted(
                     Counter(
@@ -436,15 +493,25 @@ class DailyOiArchiver:
         reasons = ",".join(
             f"{reason}={count}" for reason, count in sorted(reason_counts.items())
         ) or "none"
+        coverage_reason_counts = details.get("coverage_reason_counts")
+        if not isinstance(coverage_reason_counts, dict):
+            coverage_reason_counts = {}
+        coverage_reasons = ",".join(
+            f"{reason}={count}"
+            for reason, count in sorted(coverage_reason_counts.items())
+        ) or "none"
         print(
             "Daily OI ticker: "
             f"ticker={row.ticker} status={row.status} "
             f"vendor_oi_date={row.vendor_oi_date.isoformat() if row.vendor_oi_date else None} "
             f"expiries_expected={row.expiries_expected} "
             f"complete_chains={row.complete_chains} "
+            f"full_complete_chains={details.get('full_complete_chains', 0)} "
+            f"bounded_chains={details.get('bounded_complete_chains', 0)} "
             f"incomplete_chains={row.incomplete_chains} "
+            f"true_incomplete_chains={details.get('true_incomplete_chains', 0)} "
             f"contracts_persisted={row.contracts_persisted} "
-            f"incomplete_reasons={reasons}"
+            f"coverage_reasons={coverage_reasons} incomplete_reasons={reasons}"
         )
 
     def _finalize_failed_run(self, error: Exception) -> None:
@@ -570,6 +637,15 @@ class DailyOiArchiver:
             "expiries_attempted": sum(row.complete_chains + row.incomplete_chains for row in rows),
             "complete_chains": sum(row.complete_chains for row in rows),
             "incomplete_chains": sum(row.incomplete_chains for row in rows),
+            "full_complete_chains": sum(
+                int((row.details or {}).get("full_complete_chains", 0)) for row in rows
+            ),
+            "bounded_complete_chains": sum(
+                int((row.details or {}).get("bounded_complete_chains", 0)) for row in rows
+            ),
+            "true_incomplete_chains": sum(
+                int((row.details or {}).get("true_incomplete_chains", 0)) for row in rows
+            ),
             "contracts_persisted": sum(row.contracts_persisted for row in rows),
         }
         self.run.status = status
@@ -591,6 +667,9 @@ class DailyOiArchiver:
             self.budget.consumed,
             self.budget.attempts,
             elapsed,
+            values["full_complete_chains"],
+            values["bounded_complete_chains"],
+            values["true_incomplete_chains"],
         )
 
 

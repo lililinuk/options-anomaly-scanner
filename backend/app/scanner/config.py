@@ -35,6 +35,11 @@ class ArchiveLimits:
     materialization_max_attempts: int = 3
     materialization_max_wait_seconds: float = 30.0
     materialization_default_retry_after_seconds: float = 2.0
+    # Nightwatch's chain-snapshot product returns at most the 400 contracts whose
+    # strikes are closest to spot. The endpoint has no continuation mechanism.
+    vendor_chain_contract_limit: int = 400
+    vendor_chain_coverage_scope: str = "NEAR_ATM_BOUNDED"
+    vendor_chain_pagination_supported: bool = False
 
 
 UNIVERSE: Final = ("AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA")

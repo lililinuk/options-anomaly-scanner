@@ -277,10 +277,17 @@ async def run_archive_mag7_oi() -> int:
         f"tickers_skipped={summary.tickers_skipped} "
         f"expiries_attempted={summary.expiries_attempted} "
         f"complete_chains={summary.complete_chains} incomplete_chains={summary.incomplete_chains} "
+        f"full_complete_chains={summary.full_complete_chains} "
+        f"bounded_complete_chains={summary.bounded_complete_chains} "
+        f"true_incomplete_chains={summary.true_incomplete_chains} "
         f"contracts_persisted={summary.contracts_persisted} "
         f"consumed_units={summary.consumed_quota_units} network_attempts={summary.network_attempts}"
     )
-    return 0 if summary.status in {"COMPLETE", "NO_NEW_VENDOR_OI_SNAPSHOT"} else 6
+    return daily_oi_archive_exit_code(summary.status)
+
+
+def daily_oi_archive_exit_code(status: str) -> int:
+    return 0 if status in {"COMPLETE", "NO_NEW_VENDOR_OI_SNAPSHOT"} else 6
 
 
 async def run_archive_mag7_daily(*, mode: str, scheduled: bool) -> int:
