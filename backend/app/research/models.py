@@ -80,7 +80,8 @@ class ForwardOutcomeResearchSample(Base):
             name="forward_outcome_session_order",
         ),
         CheckConstraint(
-            "price_basis_capability IN ('PROVEN_CONSISTENT', 'UNCONFIRMED', 'MISMATCHED')",
+            "price_basis_capability IN ('PROVEN_CONSISTENT', 'RAW_UNADJUSTED', "
+            "'UNCONFIRMED', 'MISMATCHED')",
             name="forward_outcome_price_basis_capability_allowed",
         ),
         CheckConstraint(
@@ -190,7 +191,8 @@ class ForwardOutcomeMeasurement(Base):
         ),
         CheckConstraint(
             "maturity_state IN ('NOT_YET_MATURE', 'MATURE_AVAILABLE', "
-            "'MATURE_MISSING_DATA', 'INVALID_SAMPLE')",
+            "'MATURE_MISSING_DATA', 'INVALID_SAMPLE', "
+            "'CORPORATE_ACTION_CONTAMINATED')",
             name="forward_outcome_maturity_allowed",
         ),
         CheckConstraint(
@@ -202,7 +204,8 @@ class ForwardOutcomeMeasurement(Base):
             name="forward_outcome_calculation_revision_positive",
         ),
         CheckConstraint(
-            "price_basis_status IN ('PROVEN_CONSISTENT', 'UNCONFIRMED', 'MISMATCHED')",
+            "price_basis_status IN ('PROVEN_CONSISTENT', 'RAW_UNADJUSTED', "
+            "'UNCONFIRMED', 'MISMATCHED')",
             name="forward_outcome_measurement_basis_status_allowed",
         ),
         CheckConstraint(
@@ -210,12 +213,29 @@ class ForwardOutcomeMeasurement(Base):
             "AND reference_close IS NOT NULL AND target_close IS NOT NULL "
             "AND close_return IS NOT NULL AND max_upside IS NOT NULL "
             "AND max_downside IS NOT NULL "
-            "AND price_basis_status = 'PROVEN_CONSISTENT' "
+            "AND price_basis_status IN ('PROVEN_CONSISTENT', 'RAW_UNADJUSTED') "
             "AND price_basis_name IS NOT NULL) OR "
             "(maturity_state <> 'MATURE_AVAILABLE' "
             "AND close_return IS NULL AND max_upside IS NULL "
             "AND max_downside IS NULL)",
             name="forward_outcome_values_match_maturity",
+        ),
+        CheckConstraint(
+            "primary_descriptive_eligible = false OR "
+            "maturity_state = 'MATURE_AVAILABLE'",
+            name="forward_outcome_primary_descriptive_eligibility",
+        ),
+        CheckConstraint(
+            "corporate_action_state IN "
+            "('NO_KNOWN_PRICE_SCALE_EVENT_RECORDED', "
+            "'KNOWN_PRICE_SCALE_EVENT', 'NOT_APPLICABLE')",
+            name="forward_outcome_corporate_action_state_allowed",
+        ),
+        CheckConstraint(
+            "maturity_state <> 'CORPORATE_ACTION_CONTAMINATED' OR "
+            "(corporate_action_state = 'KNOWN_PRICE_SCALE_EVENT' "
+            "AND primary_descriptive_eligible = false)",
+            name="forward_outcome_contamination_quarantined",
         ),
         Index(
             "ix_forward_outcome_measurement_sample_horizon",
@@ -241,8 +261,15 @@ class ForwardOutcomeMeasurement(Base):
     price_basis_name: Mapped[str | None] = mapped_column(String(64))
     price_basis_provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     input_bar_evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    primary_descriptive_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    corporate_action_state: Mapped[str] = mapped_column(String(48), nullable=False)
+    corporate_action_event_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     outcome_methodology_version: Mapped[str] = mapped_column(String(64), nullable=False)
     calculation_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    semantic_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    supersedes_measurement_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("forward_outcome_measurements.id")
+    )
     calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
     provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
@@ -262,8 +289,13 @@ class ForwardOutcomeMeasurement(Base):
         "price_basis_name",
         "price_basis_provenance",
         "input_bar_evidence",
+        "primary_descriptive_eligible",
+        "corporate_action_state",
+        "corporate_action_event_ids",
         "outcome_methodology_version",
         "calculation_revision",
+        "semantic_fingerprint",
+        "supersedes_measurement_id",
         "calculated_at",
         "direction",
         "provenance",
@@ -271,4 +303,71 @@ class ForwardOutcomeMeasurement(Base):
     def _validate_immutable_measurement(self, key: str, value: Any) -> Any:
         if key in self.__dict__ and self.__dict__[key] != value:
             raise ValueError(f"ForwardOutcomeMeasurement.{key} is immutable")
+        return value
+
+
+class ForwardOutcomeCorporateAction(Base):
+    """Append-only known price-scale-changing event evidence for Research."""
+
+    __tablename__ = "forward_outcome_corporate_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker",
+            "effective_session",
+            "action_type",
+            "source_name",
+            "source_reference",
+            "record_revision",
+            name="uq_forward_outcome_corporate_action_revision",
+        ),
+        CheckConstraint(
+            "action_type IN ('SPLIT', 'REVERSE_SPLIT', 'STOCK_DIVIDEND', "
+            "'SPIN_OFF', 'SPECIAL_DISTRIBUTION', 'OTHER_PRICE_SCALE_CHANGING')",
+            name="forward_outcome_corporate_action_type_allowed",
+        ),
+        CheckConstraint(
+            "record_status IN ('KNOWN', 'RETRACTED')",
+            name="forward_outcome_corporate_action_status_allowed",
+        ),
+        CheckConstraint(
+            "record_revision > 0",
+            name="forward_outcome_corporate_action_revision_positive",
+        ),
+        Index(
+            "ix_forward_outcome_corporate_action_ticker_session",
+            "ticker",
+            "effective_session",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    effective_session: Mapped[date] = mapped_column(Date, nullable=False)
+    action_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    price_scale_changing: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    record_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_reference: Mapped[str] = mapped_column(String(255), nullable=False)
+    record_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    @validates(
+        "ticker",
+        "effective_session",
+        "action_type",
+        "price_scale_changing",
+        "record_status",
+        "source_name",
+        "source_reference",
+        "record_revision",
+        "provenance",
+        "recorded_at",
+    )
+    def _validate_immutable_corporate_action(self, key: str, value: Any) -> Any:
+        if key in self.__dict__ and self.__dict__[key] != value:
+            raise ValueError(f"ForwardOutcomeCorporateAction.{key} is immutable")
         return value

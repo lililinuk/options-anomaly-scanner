@@ -62,6 +62,7 @@ class MaturityState(str, Enum):
 
 class CorporateActionBasisStatus(str, Enum):
     PROVEN_CONSISTENT = "PROVEN_CONSISTENT"
+    RAW_UNADJUSTED = "RAW_UNADJUSTED"
     UNCONFIRMED = "UNCONFIRMED"
     MISMATCHED = "MISMATCHED"
 
@@ -384,8 +385,14 @@ def _advance_sessions(calendar: Any, start: pd.Timestamp, count: int) -> pd.Time
 def _require_consistent_price_basis(evidence: Sequence[ClosePriceEvidence]) -> None:
     basis_ids = {item.basis.basis_id for item in evidence}
     statuses = {item.basis.corporate_action_status for item in evidence}
-    if statuses != {CorporateActionBasisStatus.PROVEN_CONSISTENT}:
-        raise PriceBasisNotProvable("Corporate-action consistency is not proven for every Close")
+    allowed = {
+        CorporateActionBasisStatus.PROVEN_CONSISTENT,
+        CorporateActionBasisStatus.RAW_UNADJUSTED,
+    }
+    if len(statuses) != 1 or not statuses.issubset(allowed):
+        raise PriceBasisNotProvable(
+            "Every Close must share one explicit proven or raw/unadjusted price basis"
+        )
     if None in basis_ids or "" in basis_ids or len(basis_ids) != 1:
         raise PriceBasisNotProvable(
             "Reference and future Closes do not share one proven price basis"

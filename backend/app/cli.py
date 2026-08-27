@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import sys
 
 from sqlalchemy import text
@@ -20,6 +21,7 @@ from app.nightwatch.client import NightwatchClient
 from app.nightwatch.errors import NightwatchError
 from app.persistence.api_usage import persist_api_usage
 from app.persistence.metadata import MetadataRepository
+from app.research.materialization import Stage9BOutcomeMaterializer
 from app.scanner.archive import ArchiveConcurrentError, DailyOiArchiver
 from app.scanner.daily import DailyCollectionConcurrentError, DailyDataPipeline, DailyRadarBackfill
 from app.scanner.daily_observation import (
@@ -109,7 +111,37 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Record that the durable external scheduler invoked this run",
     )
+    stage9b = subcommands.add_parser(
+        "materialize-stage9b-outcomes",
+        help="Materialize versioned Research outcomes from preserved OHLC only",
+    )
+    stage9b.add_argument(
+        "--commit",
+        action="store_true",
+        help="Commit additive samples/measurement revisions; default is rollback-only dry run",
+    )
     return parser
+
+
+def run_stage9b_outcome_materialization(*, commit: bool) -> int:
+    try:
+        with get_session_factory()() as session:
+            summary = Stage9BOutcomeMaterializer(session).materialize()
+            if commit:
+                session.commit()
+            else:
+                session.rollback()
+    except (SQLAlchemyError, RuntimeError, ValueError) as error:
+        print(
+            f"Stage 9B preserved-OHLC materialization failed safely: "
+            f"{type(error).__name__}",
+            file=sys.stderr,
+        )
+        return 5
+    output = summary.to_dict()
+    output["transaction"] = "COMMITTED" if commit else "ROLLED_BACK_DRY_RUN"
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0
 
 
 async def run_refresh_metadata() -> int:
@@ -489,6 +521,8 @@ def main() -> int:
                 scheduled=args.scheduled,
             )
         )
+    if args.command == "materialize-stage9b-outcomes":
+        return run_stage9b_outcome_materialization(commit=args.commit)
     return 1
 
 
