@@ -4,19 +4,17 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "phase2a-daily-archive.yml"
 
 
-def test_phase2a_daily_workflow_has_evidence_backed_source_schedules() -> None:
+def test_phase2a_daily_workflow_is_manual_collection_only_after_cutover() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'cron: "30 6 * * 1-5"' in workflow
-    assert 'cron: "30 16 * * 1-5"' in workflow
-    assert workflow.count('timezone: "America/New_York"') == 2
-    assert workflow.count("cron:") == 2
+    assert "schedule:" not in workflow
+    assert "cron:" not in workflow
     assert "workflow_dispatch:" in workflow
     assert "- activity" in workflow
     assert "- radar-oi" in workflow
-    assert "archive-mag7-daily --mode activity --scheduled" in workflow
-    assert "archive-mag7-daily --mode radar-oi --scheduled" in workflow
-    assert "needs: activity-archive" in workflow
-    assert workflow.count("run-daily-vnext-observation") == 1
+    assert "archive-mag7-daily --mode activity" in workflow
+    assert "archive-mag7-daily --mode radar-oi" in workflow
+    assert "--scheduled" not in workflow
+    assert "run-daily-vnext-observation" not in workflow
 
 
 def test_phase2a_daily_workflow_keeps_server_side_safety_boundaries() -> None:

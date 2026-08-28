@@ -9,23 +9,20 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "phase2a-daily-archive.yml"
 
 
-def test_daily_workflow_has_evidence_backed_new_york_schedules() -> None:
+def test_daily_workflow_has_no_automatic_schedule_after_gcp_cutover() -> None:
     source = WORKFLOW.read_text(encoding="utf-8")
-    assert 'cron: "30 6 * * 1-5"' in source
-    assert 'cron: "30 16 * * 1-5"' in source
-    assert source.count('timezone: "America/New_York"') == 2
-    assert "archive-mag7-daily --mode radar-oi --scheduled" in source
-    assert "archive-mag7-daily --mode activity --scheduled" in source
+    assert "schedule:" not in source
+    assert "cron:" not in source
+    assert "archive-mag7-daily --mode radar-oi" in source
+    assert "archive-mag7-daily --mode activity" in source
+    assert "--scheduled" not in source
 
 
-def test_scheduled_observation_is_ordered_after_activity_and_source_gated() -> None:
+def test_manual_workflow_cannot_run_vnext_production_observation() -> None:
     source = WORKFLOW.read_text(encoding="utf-8")
-    observation = source.split("  daily-vnext-observation:", maxsplit=1)[1]
-    assert "needs: activity-archive" in observation
-    assert "github.event_name == 'schedule'" in observation
-    assert "run-daily-vnext-observation" in observation
-    assert source.count("run-daily-vnext-observation") == 1
-    assert "workflow_dispatch" not in observation.split("steps:", maxsplit=1)[0]
+    assert "workflow_dispatch:" in source
+    assert "daily-vnext-observation:" not in source
+    assert "run-daily-vnext-observation" not in source
 
 
 def test_workflow_is_read_only_at_github_and_has_no_retry_or_dispatch_step() -> None:
