@@ -3,9 +3,9 @@
 Date: 2026-08-28
 
 ```text
-CURRENT_MAIN_SHA=be26c9038f5faf1f20c85ce974201320a191f1d1
-GCP_MIGRATION_RESULT=READY_FOR_CUTOVER
-GCP_DEPLOYMENT_STATUS=DEPLOYED_PRIVATE_AUTHENTICATED_HEALTH_VERIFIED_CANONICAL_JOBS_PAUSED
+CURRENT_MAIN_SHA=6883971466e7c6cea0282be122cf14318ce4aaba
+GCP_MIGRATION_RESULT=PASS_DEPLOYED_AWAITING_NATURAL_RUN
+GCP_DEPLOYMENT_STATUS=ACTIVE_PRIVATE_AUTHENTICATED_AWAITING_NATURAL_2026_08_28_DEALER_AND_ACTIVITY
 
 ROOT_CAUSE_ACCEPTED=DELAYED_GITHUB_SCHEDULED_EVENT_DELIVERY
 TIMEZONE_MISCONFIGURATION_FOUND=NO
@@ -31,13 +31,21 @@ GCP_CONTAINER_IMAGE=asia-northeast1-docker.pkg.dev/nightwatch-production/nightwa
 GCP_CLOUD_RUN_REVISION=nightwatch-production-orchestrator-00002-jss
 GCP_AUTHENTICATED_HEALTH=PASS_HTTP_200_POST_HEALTH_VIA_SAME_PROJECT_SCHEDULER_OIDC
 GCP_SCHEDULER_JOBS_CREATED=YES_ALL_THREE
-GCP_SCHEDULER_JOBS_PAUSED=YES_ALL_THREE
+GCP_SCHEDULER_JOBS_PAUSED=NO_ALL_THREE_ENABLED
 GCP_TEMP_HEALTH_JOB=nightwatch-health-validation-temp-20260828_CREATED_INVOKED_ONCE_DELETED
-CUTOVER_BOUNDARY=2026-08-31_XNYS_UNTOUCHED_SESSION
+CUTOVER_DEFAULT_BRANCH_SHA=6883971466e7c6cea0282be122cf14318ce4aaba
+GCP_PRODUCTION_TRANSPORT_ACTIVATION_DATE=2026-08-28
+FIRST_FULL_THREE_SLOT_GCP_CANONICAL_MARKET_DATE=2026-08-31_EXPECTED_NEXT_ELIGIBLE_XNYS_SESSION
+GCP_RADAR_OI_JOB_ENABLED=YES
+GCP_DEALER_GEX_JOB_ENABLED=YES
+GCP_ACTIVITY_VNEXT_JOB_ENABLED=YES
+GCP_RADAR_OI_NEXT_INTENDED_MARKET_DATE=2026-08-31
+GCP_DEALER_GEX_NEXT_INTENDED_MARKET_DATE=2026-08-28
+GCP_ACTIVITY_VNEXT_NEXT_INTENDED_MARKET_DATE=2026-08-28
 
-GITHUB_AUTOMATIC_RADAR_ACTIVE=YES_PENDING_ATOMIC_CUTOVER
-GITHUB_AUTOMATIC_ACTIVITY_ACTIVE=YES_PENDING_ATOMIC_CUTOVER
-GITHUB_AUTOMATIC_DEALER_GEX_ACTIVE=YES_PENDING_ATOMIC_CUTOVER
+GITHUB_AUTOMATIC_RADAR_ACTIVE=NO
+GITHUB_AUTOMATIC_ACTIVITY_ACTIVE=NO
+GITHUB_AUTOMATIC_DEALER_GEX_ACTIVE=NO
 GITHUB_MANUAL_DISPATCH_PRESERVED=YES
 
 MANUAL_CANONICAL_LEAKAGE_FOUND=YES
@@ -50,34 +58,63 @@ TESTS=PASS_BACKEND_472_FRONTEND_13_PLUS_GLOSSARY_LINT_BUILD
 ALEMBIC_HEAD=20260828_0020_SINGLE_HEAD
 ALEMBIC_CURRENT=20260828_0020_REMOTE_APPLIED
 SECRET_SCAN=PASS_VALUE_SAFE_BOUNDARY_AND_HIGH_CONFIDENCE_SIGNATURE_SCANS
-WORKTREE_STATUS=DIRTY_EXPECTED_LOCAL_IMPLEMENTATION_NOT_COMMITTED
+WORKTREE_STATUS=CLEAN_AFTER_ACTIVATION_EVIDENCE_COMMIT
 
 NIGHTWATCH_REQUESTS_THIS_TASK=0
 PAID_UNITS_THIS_TASK=0
+NIGHTWATCH_REQUESTS_CAUSED_BY_ACTIVATION=0
+PAID_UNITS_CAUSED_BY_ACTIVATION=0
+NIGHTWATCH_REQUESTS_DURING_CUTOVER=0
+PAID_UNITS_DURING_CUTOVER=0
+GCP_2026_08_28_RADAR_BACKFILL_PERFORMED=NO
+GCP_2026_08_28_CANONICAL_SLOT_CREATED=NO_AT_ACTIVATION
 REMOTE_DB_WRITES_THIS_TASK=1_TRANSACTIONAL_SCHEMA_MIGRATION_20260828_0020
 GCP_RESOURCES_CREATED=18_PERSISTENT_TERRAFORM_RESOURCES_PLUS_1_AUTHORIZED_TEMP_HEALTH_JOB_DELETED
 GCP_ESTIMATED_FIXED_MONTHLY_COST=USD_0_IF_CURRENT_FREE_TIER_AVAILABLE_UP_TO_USD_0_42_IF_SCHEDULER_AND_TWO_SECRET_VERSIONS_FULLY_BILLABLE
 
 FIRST_NATURAL_GCP_PRODUCTION_RUN_VERIFIED=NO
 FIRST_GCP_CANONICAL_CANDIDATE_OBSERVED=NO
+
+DEALER_GEX_INTENDED_AT=PENDING_NATURAL_2026_08_28_1530_AMERICA_NEW_YORK
+DEALER_GEX_ACTUAL_STARTED_AT=PENDING_NATURAL_RUN
+DEALER_GEX_EXECUTION_DELAY=PENDING_NATURAL_RUN
+DEALER_GEX_TERMINAL_STATUS=PENDING_NATURAL_RUN
+DEALER_GEX_CANONICAL_SLOT_COUNT=0_AT_ACTIVATION
+DEALER_GEX_NETWORK_ATTEMPTS=0_AT_ACTIVATION
+DEALER_GEX_PAID_UNITS=0_AT_ACTIVATION
+
+ACTIVITY_INTENDED_AT=PENDING_NATURAL_2026_08_28_1630_AMERICA_NEW_YORK
+ACTIVITY_ACTUAL_STARTED_AT=PENDING_NATURAL_RUN
+ACTIVITY_EXECUTION_DELAY=PENDING_NATURAL_RUN
+ACTIVITY_TERMINAL_STATUS=PENDING_NATURAL_RUN
+ACTIVITY_CANONICAL_SLOT_COUNT=0_AT_ACTIVATION
+ACTIVITY_MAG7_COVERAGE=PENDING_NATURAL_RUN
+VNEXT_READINESS_STATUS=PENDING_NATURAL_RUN_EXPECTED_FAIL_CLOSED_WITHOUT_CANONICAL_RADAR
+VNEXT_SCAN_EXECUTED=NO_AT_ACTIVATION
+VNEXT_SCAN_TRIGGER=scheduled_daily_IF_AND_ONLY_IF_CANONICAL_READINESS_PASSES
+PRODUCT_CANDIDATE_COUNT=0_AT_ACTIVATION
+FIRST_KNOWLEDGE_BASELINE_COUNT=0_AT_ACTIVATION
 ```
 
 ## Gate conclusion
 
-The migration is `READY_FOR_CUTOVER`. The billing-enabled project, deployment
-identity, database migration, immutable image, private Cloud Run service,
-least-privilege IAM, two secret references, and three paused Scheduler jobs are
+The migration is `PASS_DEPLOYED_AWAITING_NATURAL_RUN`. The billing-enabled project,
+deployment identity, database migration, immutable image, private Cloud Run
+service, least-privilege IAM, two secret references, and three Scheduler jobs are
 deployed and verified. A same-project temporary Scheduler job used the production
 OIDC invoker boundary to POST only `/health`; Cloud Run returned HTTP 200 from
 revision `nightwatch-production-orchestrator-00002-jss`. The job was invoked exactly
 once and immediately deleted. Aggregate before/after evidence shows zero canonical
 slots, attempts, candidates, ScanRuns, Daily OI runs, Daily Collection runs, or
-Dealer/GEX runs created by health validation. GitHub automatic schedules remain
-active, every Google canonical job remains paused, and no cutover occurred.
+Dealer/GEX runs created by health validation.
 
-Local `main` and `origin/main` both resolved to
-`be26c9038f5faf1f20c85ce974201320a191f1d1` at inspection time. The accepted
-entrypoints remain:
+The workflow-only cutover is active on GitHub default branch `main` at
+`6883971466e7c6cea0282be122cf14318ce4aaba`: all automatic production schedules
+are absent and both collection workflows retain `workflow_dispatch`. No active or
+queued delayed GitHub scheduled execution existed at activation. The three Google
+jobs were then resumed without manual execution. At the activation checkpoint the
+database still contained zero canonical slots or delivery attempts, and Cloud
+Logging showed no canonical endpoint request. The accepted entrypoints remain:
 
 - `python -m app.cli archive-mag7-daily --mode <radar-oi|activity> --scheduled`
 - `python -m app.cli run-daily-vnext-observation`
@@ -156,10 +193,10 @@ The Google path now requires:
 - Radar and Daily OI coverage owned by a `RADAR_OI` canonical slot for the same
   intended market date.
 
-The interim GitHub automatic path, which remains active only until GCP is
-configured, now requires parent run trigger `scheduled`; `cli` /
-`workflow_dispatch` evidence cannot satisfy it. GitHub workflow dispatch still
-collects only and still contains no vNext scan step.
+The former GitHub automatic path required parent run trigger `scheduled`; that
+automatic transport is now disabled. `cli` / `workflow_dispatch` evidence cannot
+satisfy canonical readiness. GitHub workflow dispatch still collects only and
+still contains no vNext scan step.
 
 Dealer/GEX manual-versus-canonical archive selection is separate: Stage 6's
 existing point-in-time Dealer/GEX surface selection remains based on immutable
@@ -197,31 +234,26 @@ revision without logging credentials, headers, or secret values.
 
 ## Cutover safety
 
-The GitHub cron blocks were intentionally not removed in this
-`READY_FOR_CUTOVER` state. All three Google jobs were created paused and remain
-paused on their canonical URIs. The final Terraform detailed plan reports no
-changes. No period of dual automatic production has occurred.
+The previously selected 2026-08-31 activation boundary was explicitly superseded
+by Founder authorization on 2026-08-28. Before activation, `origin/main` was
+fetched, the workflow-only schedule removal was verified on live GitHub default
+branch, active/queued GitHub scheduled-run count was zero, all Google jobs were
+paused, exact schedules/URIs/OIDC/retry configuration were rechecked, Cloud Run was
+ready and private, Alembic current/head was `20260828_0020`, and the database had
+zero canonical slots or attempts.
 
-The selected untouched boundary is the XNYS session on 2026-08-31. Local
-`exchange_calendars` verification confirms the session opens at 13:30 UTC and
-closes at 20:00 UTC. Selection alone does not authorize cutover; GitHub remains
-automatic and Google Scheduler remains paused until a separate reviewed cutover
-authorization proceeds.
+Activation occurred after 08:00 America/New_York, so the missed 2026-08-28 06:30
+RADAR_OI slot was not backfilled, promoted, or manually executed. Its next natural
+execution is 2026-08-31 06:30 ET. The remaining natural 2026-08-28 DEALER_GEX and
+ACTIVITY_VNEXT slots are scheduled for 15:30 and 16:30 ET. If canonical Radar/OI
+evidence is absent, Activity readiness remains fail-closed; no manual or legacy
+evidence may substitute for it.
 
-The required cutover is:
-
-1. apply migration `20260828_0020`;
-2. build/push the image and apply Terraform with all jobs paused;
-3. verify the Cloud Run revision and authenticated non-paid `/health` route;
-4. choose the next untouched market-day boundary;
-5. merge a reviewed workflow-only change that removes GitHub `schedule` and
-   scheduled-only jobs while preserving `workflow_dispatch`;
-6. unpause the three Google jobs only after step 5 is active;
-7. observe the first natural 06:30, 15:30, and 16:30 cycle.
-
-The database slot gate prevents duplicate Google delivery. The untouched-day
-boundary prevents a newly activated Google slot from duplicating a historical
-GitHub `scheduled_daily` scan for that market date.
+All three resume operations succeeded. Post-activation state is ENABLED with the
+expected next execution dates. No canonical job was manually executed. Immediate
+post-activation database and Cloud Logging checks remained at zero canonical
+slots, attempts, network attempts, and consumed paid units. No period existed in
+which both GitHub and Google automatic scheduling were enabled.
 
 ## Validation evidence
 
@@ -243,7 +275,10 @@ GitHub `scheduled_daily` scan for that market date.
 - Bootstrap Terraform apply: PASS, 11 added, 0 changed, 0 destroyed.
 - Full Terraform deployment apply: PASS, 7 added, 0 changed, 0 destroyed; all
   three Scheduler jobs created paused.
-- Final Terraform detailed plan: PASS, no changes.
+- Pre-activation Terraform detailed plan: PASS, no changes with jobs paused.
+- Activation-state Terraform synchronization: PASS, 0 added, 0 changed, 0
+  destroyed; only the stored `scheduler_jobs_paused=false` output changed.
+- Final enabled-state Terraform detailed plan: PASS, no changes.
 - Container build: PASS with Docker 29.6.2.
 - Local immutable-image `/health`: PASS using non-secret placeholders; no database
   or Nightwatch request.
@@ -257,8 +292,14 @@ GitHub `scheduled_daily` scan for that market date.
 - Post-health database evidence: zero new canonical slots/attempts,
   ProductCandidates, ScanRuns, Daily OI runs, Daily Collection runs, and Dealer/GEX
   runs.
-- Canonical Scheduler state after validation: three jobs, all PAUSED, correct
-  New York schedules and canonical URIs, retry count zero.
+- Canonical Scheduler state after activation: three jobs, all ENABLED, correct New
+  York schedules and canonical URIs, OIDC service account/audience correct, retry
+  count zero. Radar next runs 2026-08-31; Dealer/GEX and Activity next run
+  2026-08-28.
+- Live GitHub default branch: automatic Radar/OI, Dealer/GEX, and Activity schedules
+  absent; `workflow_dispatch` preserved; active scheduled-run count zero.
+- Activation checkpoint: zero 2026-08-28 canonical slots, zero delivery attempts,
+  zero network attempts, and zero consumed paid units.
 
 No automated test, image validation, or infrastructure operation made a Nightwatch
 request. Alembic `20260828_0020` was applied to the configured remote database.
@@ -268,7 +309,7 @@ request. Alembic `20260828_0020` was applied to the configured remote database.
 Persistent resources are six API enablements, one Artifact Registry repository,
 two Secret Manager containers with Founder-populated versions, two service
 accounts, two secret-level grants, one scale-to-zero Cloud Run service, one
-service-level invoker grant, and three paused Scheduler jobs. No Cloud Build job or
+service-level invoker grant, and three enabled Scheduler jobs. No Cloud Build job or
 staging bucket was created; both images were built locally. The one authorized
 temporary Scheduler health job was invoked once and deleted; its maximum authorized
 incremental billing exposure was USD 0.10.
@@ -305,6 +346,8 @@ contacts were limited to the authorized deployment through:
 - `https://logging.googleapis.com/`
 - `https://asia-northeast1-docker.pkg.dev/`
 - `https://nightwatch-production-orchestrator-dtf5muscya-an.a.run.app/health`
+- `https://api.github.com/`
+- `https://github.com/lililinuk/options-anomaly-scanner.git`
 
 Tool and image dependency contacts were:
 
@@ -336,14 +379,17 @@ Official documentation/pricing pages consulted:
 
 ## First natural production proof
 
-Pending. The first natural GCP cycle must be evaluated against the Founder matrix.
-A zero-candidate COMPLETE scan can prove the pipeline; it must not fabricate a
-Candidate or baseline. Candidate-specific Stage 9 and baseline proof remains
-pending until a Candidate naturally exists.
+Pending. The natural 2026-08-28 Dealer/GEX and Activity slots must first be
+evaluated against the Founder matrix. Activity is expected to fail closed if the
+canonical Radar/OI evidence required for readiness is absent; that is truthful
+behavior, not a migration failure. The next eligible XNYS session that naturally
+receives all three slots is the first full-cycle proof. A zero-candidate COMPLETE
+scan can prove the pipeline; it must not fabricate a Candidate or baseline.
+Candidate-specific Stage 9 and baseline proof remains pending until a Candidate
+naturally exists.
 
 ## Single next required Founder action
 
-Provide explicit authorization for the reviewed atomic cutover at the untouched
-2026-08-31 XNYS boundary: remove/disable only GitHub automatic schedule triggers
-while preserving `workflow_dispatch`, verify that change is active, then unpause
-the three Google Scheduler jobs. No cutover action is authorized by this report.
+No Founder action is required at this checkpoint. Await the natural 2026-08-28
+15:30 DEALER_GEX and 16:30 ACTIVITY_VNEXT executions, then inspect and append their
+truthful production evidence without manually executing a canonical job.
