@@ -24,10 +24,72 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from app.db.base import Base
 
 
+class CanonicalSchedulerSlot(Base):
+    """One immutable logical Google Cloud Scheduler production slot."""
+
+    __tablename__ = "canonical_scheduler_slots"
+    __table_args__ = (
+        UniqueConstraint("slot_type", "intended_at", name="uq_canonical_slot_type_intended"),
+        UniqueConstraint("canonical_key", name="uq_canonical_slot_key"),
+        CheckConstraint(
+            "slot_type IN ('RADAR_OI', 'DEALER_GEX', 'ACTIVITY_VNEXT')",
+            name="canonical_slot_type_allowed",
+        ),
+        CheckConstraint(
+            "trigger_transport = 'GOOGLE_CLOUD_SCHEDULER'",
+            name="canonical_slot_transport_google_only",
+        ),
+        Index("ix_canonical_slot_market_date", "intended_market_date", "slot_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    slot_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    intended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    intended_market_date: Mapped[date] = mapped_column(Date, nullable=False)
+    market_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    actual_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    trigger_transport: Mapped[str] = mapped_column(String(48), nullable=False)
+    canonical_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    scheduler_job_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(48), nullable=False)
+    paid_work_attempted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    network_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consumed_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    product_candidate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    baseline_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CanonicalSchedulerAttempt(Base):
+    """One delivery attempt for a canonical slot; duplicates never own business work."""
+
+    __tablename__ = "canonical_scheduler_attempts"
+    __table_args__ = (Index("ix_canonical_attempt_slot_received", "slot_id", "received_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    slot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("canonical_scheduler_slots.id"), nullable=False
+    )
+    scheduler_job_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(48), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_status: Mapped[str | None] = mapped_column(String(48))
+
+
 class ScanRun(Base):
     __tablename__ = "scan_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    canonical_slot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("canonical_scheduler_slots.id"), unique=True
+    )
     trigger: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), default="created")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -713,6 +775,9 @@ class DailyOiArchiveRun(Base):
     __tablename__ = "daily_oi_archive_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    canonical_slot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("canonical_scheduler_slots.id"), unique=True
+    )
     trigger: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(48))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -728,6 +793,9 @@ class DailyCollectionRun(Base):
     __tablename__ = "daily_collection_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    canonical_slot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("canonical_scheduler_slots.id"), unique=True
+    )
     trigger: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -1294,6 +1362,9 @@ class DealerGexArchiveRun(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    canonical_slot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("canonical_scheduler_slots.id"), unique=True
     )
     trigger: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(48), nullable=False)

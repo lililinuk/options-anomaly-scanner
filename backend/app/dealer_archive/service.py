@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from time import perf_counter
 from typing import Any
 
@@ -95,6 +95,8 @@ class DealerGexArchiver:
         trigger: str = "cli",
         dry_run: bool = False,
         now: datetime | None = None,
+        intended_market_date: date | None = None,
+        canonical_slot_id: uuid.UUID | None = None,
     ) -> DealerGexArchiveSummary:
         started_clock = perf_counter()
         capture_time = now or utc_now()
@@ -102,7 +104,8 @@ class DealerGexArchiver:
             capture_time,
             timezone_name=self.config.market_timezone,
             local_time=self.config.intended_capture_slot,
-            enforce_target_time=trigger == "external_scheduler",
+            enforce_target_time=trigger in {"external_scheduler", "google_cloud_scheduler"},
+            intended_market_date=intended_market_date,
         )
         selected = tuple(dict.fromkeys(tickers or self.config.universe))
         invalid = sorted(set(selected).difference(self.config.universe))
@@ -166,6 +169,7 @@ class DealerGexArchiver:
                     return _summary_from_run(existing)
 
             self._run = DealerGexArchiveRun(
+                canonical_slot_id=canonical_slot_id,
                 trigger=trigger,
                 status="RUNNING",
                 started_at=capture_time,

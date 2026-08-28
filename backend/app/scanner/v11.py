@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+import uuid
 from datetime import date
 from decimal import Decimal
 from time import perf_counter
@@ -58,10 +59,16 @@ class Mag7Scanner(LegacyMag7Scanner):
     latest complete daily archive; the interactive scan never rebuilds the 0–180 DTE archive.
     """
 
-    async def execute(self, *, trigger: str = "cli") -> ScanSummary:
+    async def execute(
+        self,
+        *,
+        trigger: str = "cli",
+        market_date_override: date | None = None,
+        canonical_slot_id: uuid.UUID | None = None,
+    ) -> ScanSummary:
         started_clock = perf_counter()
         now = utc_now()
-        market_day = market_date(now)
+        market_day = market_date_override or market_date(now)
         if not bool(
             self.session.scalar(text("SELECT pg_try_advisory_lock(hashtext('mag7_phase2a_scan'))"))
         ):
@@ -73,6 +80,7 @@ class Mag7Scanner(LegacyMag7Scanner):
             if conflict:
                 raise ConcurrentScanError("A scan run is already marked RUNNING")
             self.run = ScanRun(
+                canonical_slot_id=canonical_slot_id,
                 trigger=trigger,
                 status="RUNNING",
                 started_at=now,

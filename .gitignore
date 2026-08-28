@@ -32,3 +32,10 @@ Thumbs.db
 *.log
 tmp/
 
+# Terraform local working data and state (may contain infrastructure metadata)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log

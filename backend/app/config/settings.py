@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     nightwatch_max_concurrency: int = Field(default=4, ge=1, le=32)
     nightwatch_metadata_refresh_seconds: int = Field(default=900, ge=60)
     scan_schedule_enabled: bool = False
+    gcp_scheduler_job_radar_oi: str = "nightwatch-radar-oi"
+    gcp_scheduler_job_dealer_gex: str = "nightwatch-dealer-gex"
+    gcp_scheduler_job_activity_vnext: str = "nightwatch-activity-vnext"
 
     # Radar eligibility values are process configuration, not business-logic constants. The
     # explicit identity/version is persisted with every evaluation so changing an active profile

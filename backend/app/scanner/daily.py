@@ -115,6 +115,8 @@ class DailyDataPipeline:
         trigger: str = "cli",
         mode: DailyPipelineMode | str = DailyPipelineMode.ALL,
         started_at: datetime | None = None,
+        market_date_override: date | None = None,
+        canonical_slot_id: uuid.UUID | None = None,
     ) -> DailyCollectionSummary:
         started_clock = perf_counter()
         now = started_at or utc_now()
@@ -125,10 +127,11 @@ class DailyDataPipeline:
             raise DailyCollectionConcurrentError("A MAG7 daily collection is already running")
         try:
             self.run = DailyCollectionRun(
+                canonical_slot_id=canonical_slot_id,
                 trigger=trigger,
                 status="RUNNING",
                 started_at=now,
-                ny_market_date=market_date(now),
+                ny_market_date=market_date_override or market_date(now),
                 specification_version=SIGNAL_SPEC_VERSION,
                 radar_threshold_profile_id=self.profile.profile_id,
                 radar_threshold_profile_version=self.profile.version,
@@ -153,7 +156,10 @@ class DailyDataPipeline:
             if selected_mode in {DailyPipelineMode.ALL, DailyPipelineMode.RADAR_OI}:
                 archiver = DailyOiArchiver(self.session, self.client)
                 try:
-                    oi = await archiver.execute(trigger="daily_pipeline")
+                    oi = await archiver.execute(
+                        trigger=trigger,
+                        canonical_slot_id=canonical_slot_id,
+                    )
                     oi_consumed, oi_attempts = oi.consumed_quota_units, oi.network_attempts
                     subjobs["daily_oi"] = _archive_summary(oi)
                 except Exception as error:
@@ -304,7 +310,10 @@ class DailyActivityCollector:
 
     async def execute(self) -> SubjobSummary:
         assert self.pipeline.run
-        plan = activity_session_plan(self.pipeline.run.started_at)
+        plan = activity_session_plan(
+            self.pipeline.run.started_at,
+            intended_market_date=getattr(self.pipeline.run, "ny_market_date", None),
+        )
         if not plan.should_collect:
             return SubjobSummary(
                 plan.status,

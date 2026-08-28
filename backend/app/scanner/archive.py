@@ -84,7 +84,12 @@ class DailyOiArchiver:
         self.budget = ArchiveBudget(session)
         self.budget_limited = False
 
-    async def execute(self, *, trigger: str = "cli") -> ArchiveSummary:
+    async def execute(
+        self,
+        *,
+        trigger: str = "cli",
+        canonical_slot_id: uuid.UUID | None = None,
+    ) -> ArchiveSummary:
         started_clock = perf_counter()
         failed = False
         if not bool(
@@ -95,6 +100,7 @@ class DailyOiArchiver:
             raise ArchiveConcurrentError("A daily OI archive is already running")
         try:
             self.run = DailyOiArchiveRun(
+                canonical_slot_id=canonical_slot_id,
                 trigger=trigger,
                 status="RUNNING",
                 started_at=utc_now(),

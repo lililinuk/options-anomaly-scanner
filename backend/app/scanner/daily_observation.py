@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -12,7 +13,10 @@ from sqlalchemy.orm import Session
 from app.confirmation.vnext import Stage6BalancedContextService
 from app.core.time import utc_now
 from app.db.models import (
+    CanonicalSchedulerSlot,
     DailyCollectionCoverage,
+    DailyCollectionRun,
+    DailyOiArchiveRun,
     DailyOiArchiveTicker,
     ScanRun,
 )
@@ -73,40 +77,81 @@ def load_daily_observation_readiness(
     session: Session,
     *,
     evaluated_at: datetime | None = None,
+    intended_market_date: date | None = None,
+    canonical_slot_id: uuid.UUID | None = None,
 ) -> DailyObservationReadiness:
     now = evaluated_at or utc_now()
-    plan = activity_session_plan(now)
+    plan = activity_session_plan(now, intended_market_date=intended_market_date)
     if not plan.should_collect:
         raise DailyObservationNotReady(plan.status)
     market_day = plan.market_date
     expected_oi_date = expected_previous_xnys_session(market_day)
 
-    activity_rows = list(
-        session.scalars(
-            select(DailyCollectionCoverage).where(
-                DailyCollectionCoverage.subjob == "ACTIVITY",
-                DailyCollectionCoverage.activity_market_date == market_day,
-                DailyCollectionCoverage.status == "COMPLETE",
+    activity_query = select(DailyCollectionCoverage).where(
+        DailyCollectionCoverage.subjob == "ACTIVITY",
+        DailyCollectionCoverage.activity_market_date == market_day,
+        DailyCollectionCoverage.status == "COMPLETE",
+    )
+    radar_query = select(DailyCollectionCoverage).where(
+        DailyCollectionCoverage.subjob == "RADAR",
+        DailyCollectionCoverage.vendor_oi_date == expected_oi_date,
+        DailyCollectionCoverage.status == "COMPLETE",
+    )
+    oi_query = select(DailyOiArchiveTicker).where(
+        DailyOiArchiveTicker.vendor_oi_date == expected_oi_date,
+        DailyOiArchiveTicker.status.in_({"COMPLETE", "NO_NEW_VENDOR_OI_SNAPSHOT"}),
+    )
+    if canonical_slot_id is not None:
+        activity_query = activity_query.join(
+            DailyCollectionRun,
+            DailyCollectionRun.id == DailyCollectionCoverage.daily_run_id,
+        ).where(DailyCollectionRun.canonical_slot_id == canonical_slot_id)
+        radar_query = (
+            radar_query.join(
+                DailyCollectionRun,
+                DailyCollectionRun.id == DailyCollectionCoverage.daily_run_id,
+            )
+            .join(
+                CanonicalSchedulerSlot,
+                CanonicalSchedulerSlot.id == DailyCollectionRun.canonical_slot_id,
+            )
+            .where(
+                CanonicalSchedulerSlot.slot_type == "RADAR_OI",
+                CanonicalSchedulerSlot.intended_market_date == market_day,
             )
         )
-    )
-    radar_rows = list(
-        session.scalars(
-            select(DailyCollectionCoverage).where(
-                DailyCollectionCoverage.subjob == "RADAR",
-                DailyCollectionCoverage.vendor_oi_date == expected_oi_date,
-                DailyCollectionCoverage.status == "COMPLETE",
+        oi_query = (
+            oi_query.join(
+                DailyOiArchiveRun,
+                DailyOiArchiveRun.id == DailyOiArchiveTicker.archive_run_id,
+            )
+            .join(
+                CanonicalSchedulerSlot,
+                CanonicalSchedulerSlot.id == DailyOiArchiveRun.canonical_slot_id,
+            )
+            .where(
+                CanonicalSchedulerSlot.slot_type == "RADAR_OI",
+                CanonicalSchedulerSlot.intended_market_date == market_day,
             )
         )
-    )
-    oi_rows = list(
-        session.scalars(
-            select(DailyOiArchiveTicker).where(
-                DailyOiArchiveTicker.vendor_oi_date == expected_oi_date,
-                DailyOiArchiveTicker.status.in_({"COMPLETE", "NO_NEW_VENDOR_OI_SNAPSHOT"}),
-            )
-        )
-    )
+    else:
+        # Interim GitHub scheduled production remains active until the atomic GCP
+        # cutover. Keep its source gate isolated from workflow_dispatch/CLI evidence.
+        activity_query = activity_query.join(
+            DailyCollectionRun,
+            DailyCollectionRun.id == DailyCollectionCoverage.daily_run_id,
+        ).where(DailyCollectionRun.trigger == "scheduled")
+        radar_query = radar_query.join(
+            DailyCollectionRun,
+            DailyCollectionRun.id == DailyCollectionCoverage.daily_run_id,
+        ).where(DailyCollectionRun.trigger == "scheduled")
+        oi_query = oi_query.join(
+            DailyOiArchiveRun,
+            DailyOiArchiveRun.id == DailyOiArchiveTicker.archive_run_id,
+        ).where(DailyOiArchiveRun.trigger == "scheduled")
+    activity_rows = list(session.scalars(activity_query))
+    radar_rows = list(session.scalars(radar_query))
+    oi_rows = list(session.scalars(oi_query))
     activity_tickers = _complete_tickers(activity_rows)
     radar_tickers = _complete_tickers(radar_rows)
     oi_tickers = _complete_tickers(oi_rows)
@@ -139,11 +184,23 @@ async def run_daily_vnext_observation(
     client: NightwatchClient,
     *,
     evaluated_at: datetime | None = None,
+    intended_market_date: date | None = None,
+    canonical_slot_id: uuid.UUID | None = None,
 ) -> DailyObservationSummary:
     """Run one scheduled vNext scan and archived-evidence baselines after readiness passes."""
 
-    load_daily_observation_readiness(session, evaluated_at=evaluated_at)
-    scan = await Mag7Scanner(session, client).execute(trigger="scheduled_daily")
+    load_daily_observation_readiness(
+        session,
+        evaluated_at=evaluated_at,
+        intended_market_date=intended_market_date,
+        canonical_slot_id=canonical_slot_id,
+    )
+    scan_kwargs: dict[str, Any] = {"trigger": "scheduled_daily"}
+    if intended_market_date is not None:
+        scan_kwargs["market_date_override"] = intended_market_date
+    if canonical_slot_id is not None:
+        scan_kwargs["canonical_slot_id"] = canonical_slot_id
+    scan = await Mag7Scanner(session, client).execute(**scan_kwargs)
     if scan.status != "COMPLETE":
         return DailyObservationSummary(
             scan_run_id=str(scan.scan_run_id),

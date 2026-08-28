@@ -25,12 +25,13 @@ def dealer_capture_session_plan(
     timezone_name: str,
     local_time: str,
     enforce_target_time: bool = False,
+    intended_market_date: date | None = None,
 ) -> CaptureSessionPlan:
     """Resolve the configured slot against the authoritative XNYS session calendar."""
 
     aware_now = ensure_utc(now)
     timezone = ZoneInfo(timezone_name)
-    market_day = aware_now.astimezone(timezone).date()
+    market_day = intended_market_date or aware_now.astimezone(timezone).date()
     hour, minute = (int(part) for part in local_time.split(":", 1))
     intended = datetime.combine(market_day, time(hour, minute), tzinfo=timezone)
     calendar = xcals.get_calendar("XNYS")

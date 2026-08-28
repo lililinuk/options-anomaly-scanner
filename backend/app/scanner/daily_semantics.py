@@ -66,11 +66,15 @@ class ActivitySessionPlan:
     status: str
 
 
-def activity_session_plan(now: datetime) -> ActivitySessionPlan:
-    """Authorize canonical Activity capture only after the actual XNYS close."""
+def activity_session_plan(
+    now: datetime,
+    *,
+    intended_market_date: date | None = None,
+) -> ActivitySessionPlan:
+    """Authorize Activity for the intended XNYS session only after its actual close."""
 
     aware_now = ensure_utc(now)
-    market_day = aware_now.astimezone(NEW_YORK).date()
+    market_day = intended_market_date or aware_now.astimezone(NEW_YORK).date()
     calendar = xcals.get_calendar("XNYS")
     session_label = pd.Timestamp(market_day.isoformat())
     if not calendar.is_session(session_label):

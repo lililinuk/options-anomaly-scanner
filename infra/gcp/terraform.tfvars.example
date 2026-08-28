@@ -1,0 +1,4 @@
+project_id            = "nightwatch-production"
+region                = "asia-northeast1"
+container_image       = "asia-northeast1-docker.pkg.dev/nightwatch-production/nightwatch-production/nightwatch-production-orchestrator@sha256:REQUIRED_AFTER_PUSH"
+scheduler_jobs_paused = true
