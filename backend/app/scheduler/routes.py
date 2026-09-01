@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import logging
+
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -10,11 +13,35 @@ from app.db.session import get_session_factory
 from app.scheduler.domain import (
     CanonicalSlotType,
     canonical_slot_identity,
+    parse_scheduler_timestamp,
     validate_scheduler_headers,
 )
 from app.scheduler.service import CanonicalSchedulerOrchestrator
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _log_pre_slot_rejection(
+    *,
+    rejection_code: str,
+    slot_type: CanonicalSlotType,
+    scheduler_job_name: str | None,
+    schedule_time: str | None,
+) -> None:
+    payload = {
+        "rejection_code": rejection_code,
+        "slot_type": slot_type.value,
+        "scheduler_job_name": scheduler_job_name,
+    }
+    if schedule_time is not None:
+        try:
+            parsed_schedule_time = parse_scheduler_timestamp(schedule_time)
+        except ValueError:
+            pass
+        else:
+            payload["parsed_schedule_timestamp"] = parsed_schedule_time.isoformat()
+    logger.warning(json.dumps(payload, sort_keys=True))
 
 
 def _expected_job_id(slot_type: CanonicalSlotType) -> str:
@@ -39,7 +66,14 @@ async def invoke_canonical_slot(
     x_cloudscheduler_scheduletime: str | None = Header(default=None),
 ) -> JSONResponse:
     if x_cloudscheduler_scheduletime is None:
-        raise HTTPException(status_code=400, detail="MISSING_CLOUD_SCHEDULER_SCHEDULE_TIME")
+        rejection_code = "MISSING_CLOUD_SCHEDULER_SCHEDULE_TIME"
+        _log_pre_slot_rejection(
+            rejection_code=rejection_code,
+            slot_type=slot_type,
+            scheduler_job_name=x_cloudscheduler_jobname,
+            schedule_time=None,
+        )
+        raise HTTPException(status_code=400, detail=rejection_code)
     try:
         scheduler_job_name = validate_scheduler_headers(
             scheduler_marker=x_cloudscheduler,
@@ -48,7 +82,14 @@ async def invoke_canonical_slot(
         )
         identity = canonical_slot_identity(slot_type, x_cloudscheduler_scheduletime)
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        rejection_code = str(error)
+        _log_pre_slot_rejection(
+            rejection_code=rejection_code,
+            slot_type=slot_type,
+            scheduler_job_name=x_cloudscheduler_jobname,
+            schedule_time=x_cloudscheduler_scheduletime,
+        )
+        raise HTTPException(status_code=400, detail=rejection_code) from error
 
     settings = get_settings()
     try:

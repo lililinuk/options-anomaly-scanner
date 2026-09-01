@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from app.db.models import CanonicalSchedulerAttempt, CanonicalSchedulerSlot
 from app.scanner.daily_semantics import activity_session_plan
+from app.scheduler import routes as scheduler_routes
 from app.scheduler import service as scheduler_service
 from app.scheduler.domain import (
     CanonicalSlotType,
@@ -78,9 +82,99 @@ def test_scheduler_identity_is_dst_safe(
     assert identity.intended_at_et.utcoffset().total_seconds() == expected_offset_hours * 3600
 
 
-def test_scheduler_identity_rejects_wrong_slot_clock() -> None:
-    with pytest.raises(ValueError, match="DOES_NOT_MATCH_SLOT"):
-        canonical_slot_identity(CanonicalSlotType.ACTIVITY_VNEXT, "2026-08-27T19:30:00Z")
+@pytest.mark.parametrize(
+    ("slot_type", "schedule_time", "expected_intended_at"),
+    [
+        (
+            CanonicalSlotType.RADAR_OI,
+            "2026-08-24T10:30:00Z",
+            datetime(2026, 8, 24, 10, 30, tzinfo=UTC),
+        ),
+        (
+            CanonicalSlotType.RADAR_OI,
+            "2026-08-24T10:30:42.123456Z",
+            datetime(2026, 8, 24, 10, 30, tzinfo=UTC),
+        ),
+        (
+            CanonicalSlotType.DEALER_GEX,
+            "2026-08-31T19:30:00Z",
+            datetime(2026, 8, 31, 19, 30, tzinfo=UTC),
+        ),
+        (
+            CanonicalSlotType.DEALER_GEX,
+            "2026-08-31T19:30:05.141519Z",
+            datetime(2026, 8, 31, 19, 30, tzinfo=UTC),
+        ),
+        (
+            CanonicalSlotType.ACTIVITY_VNEXT,
+            "2026-08-31T20:30:00Z",
+            datetime(2026, 8, 31, 20, 30, tzinfo=UTC),
+        ),
+        (
+            CanonicalSlotType.ACTIVITY_VNEXT,
+            "2026-08-31T20:30:02.463723Z",
+            datetime(2026, 8, 31, 20, 30, tzinfo=UTC),
+        ),
+    ],
+)
+def test_scheduler_identity_accepts_and_normalizes_configured_cron_minute(
+    slot_type: CanonicalSlotType,
+    schedule_time: str,
+    expected_intended_at: datetime,
+) -> None:
+    identity = canonical_slot_identity(slot_type, schedule_time)
+    assert identity.intended_at == expected_intended_at
+    assert identity.intended_at.second == 0
+    assert identity.intended_at.microsecond == 0
+
+
+@pytest.mark.parametrize(
+    ("slot_type", "schedule_time"),
+    [
+        (CanonicalSlotType.DEALER_GEX, "2026-08-31T18:30:00Z"),
+        (CanonicalSlotType.DEALER_GEX, "2026-08-31T19:29:59Z"),
+        (CanonicalSlotType.ACTIVITY_VNEXT, "2026-08-31T19:30:00Z"),
+        (CanonicalSlotType.ACTIVITY_VNEXT, "2026-08-31T20:31:00Z"),
+    ],
+)
+def test_scheduler_identity_rejects_wrong_hour_or_minute(
+    slot_type: CanonicalSlotType,
+    schedule_time: str,
+) -> None:
+    with pytest.raises(ValueError, match="SCHEDULE_TIME_DOES_NOT_MATCH_SLOT"):
+        canonical_slot_identity(slot_type, schedule_time)
+
+
+@pytest.mark.parametrize(
+    ("schedule_time", "error_code"),
+    [
+        ("not-a-timestamp", "INVALID_CLOUD_SCHEDULER_SCHEDULE_TIME"),
+        ("2026-08-31T15:30:05.141519", "CLOUD_SCHEDULER_SCHEDULE_TIME_MUST_BE_AWARE"),
+    ],
+)
+def test_scheduler_identity_rejects_invalid_schedule_timestamp(
+    schedule_time: str,
+    error_code: str,
+) -> None:
+    with pytest.raises(ValueError, match=error_code):
+        canonical_slot_identity(CanonicalSlotType.DEALER_GEX, schedule_time)
+
+
+def test_exact_and_fractional_representations_share_canonical_identity() -> None:
+    identities = [
+        canonical_slot_identity(CanonicalSlotType.DEALER_GEX, schedule_time)
+        for schedule_time in (
+            "2026-08-31T19:30:00.000000Z",
+            "2026-08-31T19:30:05.141519Z",
+            "2026-08-31T19:30:59.999999Z",
+        )
+    ]
+    assert {identity.intended_at for identity in identities} == {
+        datetime(2026, 8, 31, 19, 30, tzinfo=UTC)
+    }
+    assert {identity.intended_market_date for identity in identities} == {date(2026, 8, 31)}
+    assert len({identity.canonical_key for identity in identities}) == 1
+    assert len(set(identities)) == 1
 
 
 def test_scheduler_headers_require_expected_google_job() -> None:
@@ -99,6 +193,55 @@ def test_scheduler_headers_require_expected_google_job() -> None:
             scheduler_job_name=job,
             expected_job_id="nightwatch-radar-oi",
         )
+    with pytest.raises(ValueError, match="MISSING_CLOUD_SCHEDULER_MARKER"):
+        validate_scheduler_headers(
+            scheduler_marker=None,
+            scheduler_job_name=job,
+            expected_job_id="nightwatch-activity-vnext",
+        )
+    with pytest.raises(ValueError, match="MISSING_CLOUD_SCHEDULER_JOB_NAME"):
+        validate_scheduler_headers(
+            scheduler_marker="true",
+            scheduler_job_name=None,
+            expected_job_id="nightwatch-activity-vnext",
+        )
+
+
+@pytest.mark.asyncio
+async def test_pre_slot_rejection_logging_is_safe_and_structured(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    job_name = "projects/p/locations/us-east1/jobs/nightwatch-dealer-gex"
+    monkeypatch.setattr(
+        scheduler_routes,
+        "_expected_job_id",
+        lambda _slot_type: "nightwatch-dealer-gex",
+    )
+    with caplog.at_level(logging.WARNING, logger=scheduler_routes.__name__):
+        with pytest.raises(HTTPException) as raised:
+            await scheduler_routes.invoke_canonical_slot(
+                slot_type=CanonicalSlotType.DEALER_GEX,
+                x_cloudscheduler="true",
+                x_cloudscheduler_jobname=job_name,
+                x_cloudscheduler_scheduletime="2026-08-31T19:29:59.123456Z",
+            )
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "SCHEDULE_TIME_DOES_NOT_MATCH_SLOT"
+    payload = json.loads(caplog.records[-1].message)
+    assert payload == {
+        "parsed_schedule_timestamp": "2026-08-31T19:29:59.123456+00:00",
+        "rejection_code": "SCHEDULE_TIME_DOES_NOT_MATCH_SLOT",
+        "scheduler_job_name": job_name,
+        "slot_type": "DEALER_GEX",
+    }
+    assert {
+        "authorization",
+        "oidc_token",
+        "nightwatch_api_key",
+        "database_url",
+    }.isdisjoint(payload)
 
 
 def test_health_supports_get_and_scheduler_post_without_side_effects() -> None:
@@ -125,21 +268,38 @@ def test_future_intended_activity_session_cannot_be_treated_as_complete() -> Non
 async def test_duplicate_delivery_runs_business_execution_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    identity = canonical_slot_identity(CanonicalSlotType.RADAR_OI, "2026-08-24T10:30:00Z")
+    exact_identity = canonical_slot_identity(
+        CanonicalSlotType.RADAR_OI,
+        "2026-08-24T10:30:00Z",
+    )
+    fractional_identity = canonical_slot_identity(
+        CanonicalSlotType.RADAR_OI,
+        "2026-08-24T10:30:42.123456Z",
+    )
     slot = _slot()
     owner = SlotClaim(slot, _attempt(slot), True)
     duplicate = SlotClaim(slot, _attempt(slot), False)
-    claims = iter([owner, duplicate])
+    claimed_identities = []
+    canonical_slots = {}
+
+    def claim_once(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        identity = kwargs["identity"]
+        claimed_identities.append(identity)
+        existing = canonical_slots.setdefault(identity.canonical_key, slot)
+        if len(claimed_identities) == 1:
+            return owner
+        return SlotClaim(existing, duplicate.attempt, False)
+
     monkeypatch.setattr(
         scheduler_service,
         "claim_canonical_slot",
-        lambda *_args, **_kwargs: next(claims),
+        claim_once,
     )
-    executions = 0
+    vendor_executions = 0
 
     async def run_once(*_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
-        nonlocal executions
-        executions += 1
+        nonlocal vendor_executions
+        vendor_executions += 1
         slot.status = "COMPLETE"
 
     orchestrator = CanonicalSchedulerOrchestrator(
@@ -148,19 +308,24 @@ async def test_duplicate_delivery_runs_business_execution_once(
     )
     monkeypatch.setattr(orchestrator, "_run_radar_oi", run_once)
     first = await orchestrator.execute(
-        identity=identity,
+        identity=exact_identity,
         actual_started_at=slot.actual_started_at,
         scheduler_job_name=slot.scheduler_job_name,
     )
     second = await orchestrator.execute(
-        identity=identity,
+        identity=fractional_identity,
         actual_started_at=slot.actual_started_at,
         scheduler_job_name=slot.scheduler_job_name,
     )
-    assert executions == 1
+    assert exact_identity == fractional_identity
+    assert claimed_identities == [exact_identity, fractional_identity]
+    assert list(canonical_slots) == [exact_identity.canonical_key]
+    assert vendor_executions == 1
     assert first.created_execution_state is True
     assert second.created_execution_state is False
     assert first.status == second.status == "COMPLETE"
+    assert first.slot_id == second.slot_id
+    assert first.canonical_key == second.canonical_key
 
 
 @pytest.mark.asyncio

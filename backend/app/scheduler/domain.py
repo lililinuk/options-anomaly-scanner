@@ -67,13 +67,10 @@ def canonical_slot_identity(
     intended_at = parse_scheduler_timestamp(schedule_time)
     intended_et = intended_at.astimezone(NEW_YORK)
     expected_hour, expected_minute = EXPECTED_LOCAL_TIMES[slot_type]
-    if (
-        intended_et.hour,
-        intended_et.minute,
-        intended_et.second,
-        intended_et.microsecond,
-    ) != (expected_hour, expected_minute, 0, 0):
+    if (intended_et.hour, intended_et.minute) != (expected_hour, expected_minute):
         raise ValueError("SCHEDULE_TIME_DOES_NOT_MATCH_SLOT")
+    intended_at = intended_at.replace(second=0, microsecond=0)
+    intended_et = intended_at.astimezone(NEW_YORK)
     semantic = f"{slot_type.value}|{intended_at.isoformat()}"
     digest = hashlib.sha256(semantic.encode()).hexdigest()[:24]
     key = f"{slot_type.value}:{intended_at.strftime('%Y%m%dT%H%M%SZ')}:{digest}"
