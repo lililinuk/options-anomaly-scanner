@@ -221,7 +221,12 @@ change was made for that harness issue.
 - Historical production rows modified: 0
 - Retroactive canonical scans: 0
 
-External URLs/API endpoints contacted: none.
+External contacts:
+
+- Nightwatch, GCP, production database, and other application/API endpoints: none.
+- Git remote: `https://github.com/lililinuk/options-anomaly-scanner.git` for the
+  authorization-required `git fetch origin` checks and isolated fix-branch push only.
+  No pull request was created.
 
 ## Residual limitations
 
