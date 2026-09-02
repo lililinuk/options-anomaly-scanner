@@ -193,6 +193,8 @@ class NightwatchClient:
                 request_id=vendor_request_id or request_id,
                 retryable=is_retryable_status(response.status_code),
                 details=payload,
+                retry_after_seconds=quota.retry_after_seconds,
+                rate_limit_reset_epoch=quota.rate_limit_reset_epoch,
             )
         return NightwatchResult(
             payload=payload,

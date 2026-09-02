@@ -280,6 +280,8 @@ async def run_archive_mag7_oi() -> int:
         f"full_complete_chains={summary.full_complete_chains} "
         f"bounded_complete_chains={summary.bounded_complete_chains} "
         f"true_incomplete_chains={summary.true_incomplete_chains} "
+        f"recovery_attempts={summary.recovery_attempts} "
+        f"recovered_chains={summary.recovered_chains} "
         f"contracts_persisted={summary.contracts_persisted} "
         f"consumed_units={summary.consumed_quota_units} network_attempts={summary.network_attempts}"
     )

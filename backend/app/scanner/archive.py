@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from time import perf_counter
 from typing import Any
@@ -26,7 +26,7 @@ from app.nightwatch.errors import NightwatchError
 from app.nightwatch.models import ApiUsageEvent, NightwatchResult
 from app.persistence.api_usage import persist_api_usage
 from app.scanner.config import ARCHIVE_LIMITS, SIGNAL_SPEC_VERSION, UNIVERSE
-from app.scanner.parsers import parse_complete_chain, parse_daily_expiry_oi
+from app.scanner.parsers import CompleteChain, parse_complete_chain, parse_daily_expiry_oi
 
 
 class ArchiveConcurrentError(RuntimeError):
@@ -54,6 +54,22 @@ class ArchiveSummary:
     full_complete_chains: int = 0
     bounded_complete_chains: int = 0
     true_incomplete_chains: int = 0
+    recovery_attempts: int = 0
+    recovered_chains: int = 0
+
+
+@dataclass
+class DeferredChainRecovery:
+    expiration: date
+    expiry_snapshot: ExpiryOiDailySnapshot
+    retry_reason: str
+    original_outcome: str
+    original_http_status: int | None
+    original_error_code: str | None
+    original_request_id: str | None
+    not_before: float
+    incomplete_detail: dict[str, Any]
+    attempts: int = 0
 
 
 class ArchiveBudget:
@@ -83,6 +99,8 @@ class DailyOiArchiver:
         self.run: DailyOiArchiveRun | None = None
         self.budget = ArchiveBudget(session)
         self.budget_limited = False
+        self.recovery_attempts = 0
+        self.recovered_chains = 0
 
     async def execute(
         self,
@@ -264,6 +282,8 @@ class DailyOiArchiver:
         full_complete_chains = 0
         bounded_complete_chains = 0
         active_chain_unavailable = False
+        deferred_recoveries: list[DeferredChainRecovery] = []
+        recovery_history: list[dict[str, Any]] = []
         expiry_items = list(snapshots.items())
         for expiry_index, (expiration, expiry_snapshot) in enumerate(expiry_items):
             try:
@@ -283,6 +303,40 @@ class DailyOiArchiver:
                 self.session.commit()
                 raise
             except NightwatchError as error:
+                if error.status_code == 429:
+                    delay = rate_limit_retry_after_seconds(error)
+                    expiry_snapshot.chain_status = "TRANSIENT_RATE_LIMIT"
+                    ticker_status.incomplete_chains += 1
+                    detail = {
+                        "expiration": expiration.isoformat(),
+                        "reason": "TRANSIENT_RATE_LIMIT",
+                        "safe_error": type(error).__name__,
+                        "error_code": error.code,
+                        "http_status": error.status_code,
+                        "source_request_id": error.request_id,
+                        "deferred_retry_eligible": True,
+                        "defer_seconds": delay,
+                    }
+                    incomplete_details.append(detail)
+                    deferred_recoveries.append(
+                        DeferredChainRecovery(
+                            expiration=expiration,
+                            expiry_snapshot=expiry_snapshot,
+                            retry_reason="TRANSIENT_RATE_LIMIT",
+                            original_outcome="HTTP_429",
+                            original_http_status=error.status_code,
+                            original_error_code=error.code,
+                            original_request_id=error.request_id,
+                            not_before=perf_counter() + delay,
+                            incomplete_detail=detail,
+                        )
+                    )
+                    self.session.commit()
+                    # A 429 applies to subsequent requests as well as the failed
+                    # expiration. Honor vendor pacing before continuing the normal pass.
+                    await self.client.wait_for_materialization(delay)
+                    deferred_recoveries[-1].not_before = perf_counter()
+                    continue
                 if error.status_code != 404:
                     raise
                 expired = expiration < market_date(utc_now())
@@ -326,81 +380,177 @@ class DailyOiArchiver:
             if not chain.complete:
                 expiry_snapshot.chain_status = chain.reason
                 ticker_status.incomplete_chains += 1
-                incomplete_details.append(
-                    {
-                        "expiration": expiration.isoformat(),
-                        "reason": chain.reason,
-                        "returned": chain.returned_count,
-                        "total": chain.total_contracts,
-                        "truncated": chain.truncated,
-                        "http_status": chain_result.status_code,
-                        "invalid_row_reasons": chain.invalid_row_reasons,
-                    }
-                )
+                detail = {
+                    "expiration": expiration.isoformat(),
+                    "reason": chain.reason,
+                    "returned": chain.returned_count,
+                    "total": chain.total_contracts,
+                    "truncated": chain.truncated,
+                    "http_status": chain_result.status_code,
+                    "invalid_row_reasons": chain.invalid_row_reasons,
+                }
+                if chain.reason == "INVALID_RESPONSE":
+                    detail["deferred_retry_eligible"] = True
+                    detail["defer_seconds"] = ARCHIVE_LIMITS.recovery_default_defer_seconds
+                    deferred_recoveries.append(
+                        DeferredChainRecovery(
+                            expiration=expiration,
+                            expiry_snapshot=expiry_snapshot,
+                            retry_reason="INVALID_RESPONSE",
+                            original_outcome=chain.reason,
+                            original_http_status=chain_result.status_code,
+                            original_error_code=None,
+                            original_request_id=(
+                                chain_result.vendor_request_id or chain_result.request_id
+                            ),
+                            not_before=(
+                                perf_counter() + ARCHIVE_LIMITS.recovery_default_defer_seconds
+                            ),
+                            incomplete_detail=detail,
+                        )
+                    )
+                incomplete_details.append(detail)
                 self.session.commit()
                 continue
-            for contract in chain.contracts:
-                self.session.add(
-                    ContractOiDailySnapshot(
-                        archive_run_id=self.run.id,
-                        ticker=ticker,
-                        contract_symbol=contract.symbol,
-                        vendor_oi_date=vendor_date,
-                        vendor_oi_as_of=vendor_as_of,
-                        expiration=expiration,
-                        right=contract.right,
-                        strike=contract.strike,
-                        dte=expiry_snapshot.dte,
-                        bucket=expiry_snapshot.bucket,
-                        open_interest=contract.open_interest,
-                        open_interest_as_of=contract.open_interest_as_of,
-                        bid=contract.bid,
-                        ask=contract.ask,
-                        implied_volatility=contract.implied_volatility,
-                        delta=contract.delta,
-                        gamma=contract.gamma,
-                        theta=contract.theta,
-                        vega=contract.vega,
-                        charm=contract.charm,
-                        underlying_price=chain.underlying_price,
-                        quote_as_of=chain.quote_as_of,
-                        greeks_as_of=chain.greeks_as_of,
-                        underlying_as_of=chain.underlying_as_of,
-                        raw_payload_id=chain_raw.id,
-                        source_request_id=chain_result.vendor_request_id or chain_result.request_id,
-                        specification_version=SIGNAL_SPEC_VERSION,
-                    )
-                )
-            # Preserve the accepted persisted full-chain literal consumed by Radar.
-            # Bounded coverage remains explicitly distinct and is never promoted to
-            # the legacy full-chain eligibility marker.
-            expiry_snapshot.chain_status = (
-                "COMPLETE_BOUNDED_SNAPSHOT"
-                if chain.reason == "COMPLETE_BOUNDED_SNAPSHOT"
-                else "COMPLETE"
+            persisted, contract_count, bounded_detail = self._persist_complete_chain(
+                ticker=ticker,
+                vendor_date=vendor_date,
+                vendor_as_of=vendor_as_of,
+                expiration=expiration,
+                expiry_snapshot=expiry_snapshot,
+                chain_result=chain_result,
+                chain_raw=chain_raw,
+                chain=chain,
             )
+            assert persisted
             ticker_status.complete_chains += 1
-            ticker_status.contracts_persisted += len(chain.contracts)
+            ticker_status.contracts_persisted += contract_count
             if chain.reason == "COMPLETE_BOUNDED_SNAPSHOT":
                 bounded_complete_chains += 1
-                assert chain.total_contracts is not None
-                bounded_complete_details.append(
+                assert bounded_detail is not None
+                bounded_complete_details.append(bounded_detail)
+            else:
+                full_complete_chains += 1
+            self.session.commit()
+
+        for recovery in deferred_recoveries:
+            if (
+                recovery.attempts
+                >= ARCHIVE_LIMITS.recovery_max_attempts_per_failed_expiry
+            ):
+                recovery.incomplete_detail["recovery_disposition"] = (
+                    "EXPIRY_RECOVERY_CAP_REACHED"
+                )
+                continue
+            if self.recovery_attempts >= ARCHIVE_LIMITS.recovery_max_attempts_per_run:
+                recovery.incomplete_detail["recovery_disposition"] = (
+                    "RUN_LEVEL_RECOVERY_CAP_REACHED"
+                )
+                continue
+            delay = max(0.0, recovery.not_before - perf_counter())
+            if delay:
+                await self.client.wait_for_materialization(delay)
+            retry_executed_at = utc_now()
+            recovery.attempts += 1
+            self.recovery_attempts += 1
+            audit: dict[str, Any] = {
+                "expiration": recovery.expiration.isoformat(),
+                "retry_reason": recovery.retry_reason,
+                "retry_attempt_number": 1,
+                "retry_executed_at": retry_executed_at.isoformat(),
+                "original_outcome": recovery.original_outcome,
+                "original_http_status": recovery.original_http_status,
+                "original_error_code": recovery.original_error_code,
+                "original_request_id": recovery.original_request_id,
+                "expected_vendor_oi_date": vendor_date.isoformat(),
+            }
+            try:
+                retry_result, retry_raw = await self._fetch(
+                    f"/v1/options/chain-snapshot/{ticker}",
+                    params={"expiration": recovery.expiration.isoformat()},
+                    ticker=ticker,
+                    expiration=recovery.expiration,
+                    command="daily_archive.options.chain_snapshot.deferred_recovery",
+                )
+            except NightwatchError as error:
+                audit.update(
                     {
-                        "expiration": expiration.isoformat(),
-                        "coverage_type": "COMPLETE_BOUNDED_SNAPSHOT",
-                        "coverage_scope": ARCHIVE_LIMITS.vendor_chain_coverage_scope,
-                        "full_chain_available": False,
-                        "vendor_contract_limit": ARCHIVE_LIMITS.vendor_chain_contract_limit,
-                        "vendor_total_contracts": chain.total_contracts,
-                        "contracts_returned": chain.returned_count,
-                        "contracts_omitted": chain.total_contracts - chain.returned_count,
-                        "pagination_supported": (
-                            ARCHIVE_LIMITS.vendor_chain_pagination_supported
+                        "recovery_http_status": error.status_code,
+                        "recovery_error_code": error.code,
+                        "recovery_request_id": error.request_id,
+                        "final_outcome": (
+                            "TRANSIENT_RATE_LIMIT"
+                            if error.status_code == 429
+                            else "VENDOR_ERROR"
                         ),
                     }
                 )
-            else:
-                full_complete_chains += 1
+                recovery.incomplete_detail["recovery_final_outcome"] = audit["final_outcome"]
+                recovery_history.append(audit)
+                continue
+
+            retry_chain = parse_complete_chain(retry_result.payload, recovery.expiration)
+            audit.update(
+                {
+                    "recovery_http_status": retry_result.status_code,
+                    "recovery_request_id": (
+                        retry_result.vendor_request_id or retry_result.request_id
+                    ),
+                    "returned_vendor_open_interest_as_of": (
+                        retry_chain.open_interest_as_of.isoformat()
+                        if retry_chain.open_interest_as_of
+                        else None
+                    ),
+                    "recovery_parser_outcome": retry_chain.reason,
+                }
+            )
+            if not retry_chain.complete:
+                final_outcome = (
+                    "MATERIALIZATION_PENDING"
+                    if retry_result.status_code == 202
+                    else retry_chain.reason
+                )
+                recovery.expiry_snapshot.chain_status = final_outcome
+                audit["final_outcome"] = final_outcome
+                recovery.incomplete_detail["recovery_final_outcome"] = final_outcome
+                recovery_history.append(audit)
+                self.session.commit()
+                continue
+            if not recovery_vendor_date_matches(retry_chain, vendor_date):
+                recovery.expiry_snapshot.chain_status = "VENDOR_DATE_MISMATCH"
+                audit["final_outcome"] = "VENDOR_DATE_MISMATCH"
+                recovery.incomplete_detail["recovery_final_outcome"] = (
+                    "VENDOR_DATE_MISMATCH"
+                )
+                recovery_history.append(audit)
+                self.session.commit()
+                continue
+
+            persisted, contract_count, bounded_detail = self._persist_complete_chain(
+                ticker=ticker,
+                vendor_date=vendor_date,
+                vendor_as_of=vendor_as_of,
+                expiration=recovery.expiration,
+                expiry_snapshot=recovery.expiry_snapshot,
+                chain_result=retry_result,
+                chain_raw=retry_raw,
+                chain=retry_chain,
+            )
+            if persisted:
+                ticker_status.incomplete_chains -= 1
+                ticker_status.complete_chains += 1
+                ticker_status.contracts_persisted += contract_count
+                incomplete_details.remove(recovery.incomplete_detail)
+                if retry_chain.reason == "COMPLETE_BOUNDED_SNAPSHOT":
+                    bounded_complete_chains += 1
+                    assert bounded_detail is not None
+                    bounded_complete_details.append(bounded_detail)
+                else:
+                    full_complete_chains += 1
+                self.recovered_chains += 1
+            audit["final_outcome"] = retry_chain.reason
+            audit["contracts_persisted"] = contract_count
+            recovery_history.append(audit)
             self.session.commit()
         ticker_status.status = (
             "PARTIAL_INCOMPLETE_CHAIN"
@@ -450,8 +600,86 @@ class DailyOiArchiver:
                     ).items()
                 )
             ),
+            "recovery_attempts": len(recovery_history),
+            "recovered_chains": sum(
+                item.get("final_outcome")
+                in {"FULL_COMPLETE", "COMPLETE_BOUNDED_SNAPSHOT"}
+                for item in recovery_history
+            ),
+            "recovery_run_cap": ARCHIVE_LIMITS.recovery_max_attempts_per_run,
+            "deferred_recovery_history": recovery_history,
         }
         self.session.commit()
+
+    def _persist_complete_chain(
+        self,
+        *,
+        ticker: str,
+        vendor_date: date,
+        vendor_as_of: datetime,
+        expiration: date,
+        expiry_snapshot: ExpiryOiDailySnapshot,
+        chain_result: NightwatchResult,
+        chain_raw: RawVendorPayload,
+        chain: CompleteChain,
+    ) -> tuple[bool, int, dict[str, Any] | None]:
+        assert self.run
+        if expiry_snapshot.chain_status in {"COMPLETE", "COMPLETE_BOUNDED_SNAPSHOT"}:
+            return False, 0, None
+        for contract in chain.contracts:
+            self.session.add(
+                ContractOiDailySnapshot(
+                    archive_run_id=self.run.id,
+                    ticker=ticker,
+                    contract_symbol=contract.symbol,
+                    vendor_oi_date=vendor_date,
+                    vendor_oi_as_of=vendor_as_of,
+                    expiration=expiration,
+                    right=contract.right,
+                    strike=contract.strike,
+                    dte=expiry_snapshot.dte,
+                    bucket=expiry_snapshot.bucket,
+                    open_interest=contract.open_interest,
+                    open_interest_as_of=contract.open_interest_as_of,
+                    bid=contract.bid,
+                    ask=contract.ask,
+                    implied_volatility=contract.implied_volatility,
+                    delta=contract.delta,
+                    gamma=contract.gamma,
+                    theta=contract.theta,
+                    vega=contract.vega,
+                    charm=contract.charm,
+                    underlying_price=chain.underlying_price,
+                    quote_as_of=chain.quote_as_of,
+                    greeks_as_of=chain.greeks_as_of,
+                    underlying_as_of=chain.underlying_as_of,
+                    raw_payload_id=chain_raw.id,
+                    source_request_id=(
+                        chain_result.vendor_request_id or chain_result.request_id
+                    ),
+                    specification_version=SIGNAL_SPEC_VERSION,
+                )
+            )
+        expiry_snapshot.chain_status = (
+            "COMPLETE_BOUNDED_SNAPSHOT"
+            if chain.reason == "COMPLETE_BOUNDED_SNAPSHOT"
+            else "COMPLETE"
+        )
+        bounded_detail = None
+        if chain.reason == "COMPLETE_BOUNDED_SNAPSHOT":
+            assert chain.total_contracts is not None
+            bounded_detail = {
+                "expiration": expiration.isoformat(),
+                "coverage_type": "COMPLETE_BOUNDED_SNAPSHOT",
+                "coverage_scope": ARCHIVE_LIMITS.vendor_chain_coverage_scope,
+                "full_chain_available": False,
+                "vendor_contract_limit": ARCHIVE_LIMITS.vendor_chain_contract_limit,
+                "vendor_total_contracts": chain.total_contracts,
+                "contracts_returned": chain.returned_count,
+                "contracts_omitted": chain.total_contracts - chain.returned_count,
+                "pagination_supported": ARCHIVE_LIMITS.vendor_chain_pagination_supported,
+            }
+        return True, len(chain.contracts), bounded_detail
 
     async def _fetch_materialized_chain(
         self,
@@ -652,6 +880,12 @@ class DailyOiArchiver:
             "true_incomplete_chains": sum(
                 int((row.details or {}).get("true_incomplete_chains", 0)) for row in rows
             ),
+            "recovery_attempts": sum(
+                int((row.details or {}).get("recovery_attempts", 0)) for row in rows
+            ),
+            "recovered_chains": sum(
+                int((row.details or {}).get("recovered_chains", 0)) for row in rows
+            ),
             "contracts_persisted": sum(row.contracts_persisted for row in rows),
         }
         self.run.status = status
@@ -676,6 +910,8 @@ class DailyOiArchiver:
             values["full_complete_chains"],
             values["bounded_complete_chains"],
             values["true_incomplete_chains"],
+            values["recovery_attempts"],
+            values["recovered_chains"],
         )
 
 
@@ -689,6 +925,24 @@ def materialization_retry_after_seconds(result: NightwatchResult) -> float:
     if header_delay is not None:
         return header_delay
     return ARCHIVE_LIMITS.materialization_default_retry_after_seconds
+
+
+def rate_limit_retry_after_seconds(error: NightwatchError) -> float:
+    if error.retry_after_seconds is not None:
+        return max(0.0, error.retry_after_seconds)
+    if error.rate_limit_reset_epoch is not None:
+        return max(0.0, error.rate_limit_reset_epoch - utc_now().timestamp())
+    return ARCHIVE_LIMITS.recovery_default_defer_seconds
+
+
+def recovery_vendor_date_matches(chain: CompleteChain, expected_date: date) -> bool:
+    if chain.open_interest_as_of is None or chain.open_interest_as_of.date() != expected_date:
+        return False
+    return all(
+        contract.open_interest_as_of is None
+        or contract.open_interest_as_of.date() == expected_date
+        for contract in chain.contracts
+    )
 
 
 def _dec(value: float | int | Decimal | None) -> Decimal | None:

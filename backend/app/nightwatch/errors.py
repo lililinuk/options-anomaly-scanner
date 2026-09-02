@@ -11,6 +11,8 @@ class NightwatchError(Exception):
         request_id: str | None = None,
         retryable: bool = False,
         details: Any = None,
+        retry_after_seconds: float | None = None,
+        rate_limit_reset_epoch: int | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -18,6 +20,8 @@ class NightwatchError(Exception):
         self.request_id = request_id
         self.retryable = retryable
         self.details = details
+        self.retry_after_seconds = retry_after_seconds
+        self.rate_limit_reset_epoch = rate_limit_reset_epoch
 
     def __str__(self) -> str:
         context = [str(super().__str__())]

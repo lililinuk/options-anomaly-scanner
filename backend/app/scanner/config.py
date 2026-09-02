@@ -35,6 +35,12 @@ class ArchiveLimits:
     materialization_max_attempts: int = 3
     materialization_max_wait_seconds: float = 30.0
     materialization_default_retry_after_seconds: float = 2.0
+    recovery_max_attempts_per_failed_expiry: int = 1
+    # One additional recovery request per MAG7 constituent on average. This is
+    # intentionally separate from the broader archive request/quota ceilings so
+    # pathological response failures cannot multiply normal acquisition work.
+    recovery_max_attempts_per_run: int = 7
+    recovery_default_defer_seconds: float = 2.0
     # Nightwatch's chain-snapshot product returns at most the 400 contracts whose
     # strikes are closest to spot. The endpoint has no continuation mechanism.
     vendor_chain_contract_limit: int = 400

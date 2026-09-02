@@ -893,6 +893,8 @@ def _archive_summary(summary: ArchiveSummary) -> dict[str, Any]:
             "full_complete_chains": summary.full_complete_chains,
             "bounded_complete_chains": summary.bounded_complete_chains,
             "true_incomplete_chains": summary.true_incomplete_chains,
+            "recovery_attempts": getattr(summary, "recovery_attempts", 0),
+            "recovered_chains": getattr(summary, "recovered_chains", 0),
         },
     }
 
